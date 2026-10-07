@@ -1,0 +1,23 @@
+{
+  "name": "flintbench",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Project Control Center for developers.",
+  "license": "MIT",
+  "type": "module",
+  "main": "app/server/main.js",
+  "engines": {
+    "node": ">=24.7.0"
+  },
+  "scripts": {
+    "start": "node app/server/main.js",
+    "dev": "node --watch-path=app/server app/server/main.js",
+    "reset-setup": "node app/server/reset-setup.mjs"
+  },
+  "dependencies": {
+    "@lydell/node-pty": "1.2.0-beta.15",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "ws": "^8.18.0"
+  }
+}

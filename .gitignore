@@ -1,0 +1,24 @@
+# FlintBench publishes only what makes the dashboard run, plus its README, license and
+# screenshots. Everything else in this folder stays local: the list below ignores the whole
+# folder first, then lets back in exactly what belongs to the repository.
+
+/*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/package.json
+!/package-lock.json
+!/app/
+!/docs/
+
+# never, even inside the folders let in above
+node_modules/
+data/
+*.log
+*.tmp
+*.bak
+.env
+.env.*
+.DS_Store
+Thumbs.db
+desktop.ini
