@@ -48,6 +48,19 @@ async function showInExplorer(folder, item = '') {
   return { shown: state === 'focused' || state === 'denied', focused: state === 'focused' };
 }
 
+/** Selected items and folders of the open File Explorer windows (Windows only). */
+async function explorerSelection() {
+  const out = { selected: [], folders: [] };
+  if (!IS_WIN) return out;
+  for (const line of await windowsScript(['-Mode', 'selection'])) {
+    const [kind, value] = line.split('\t');
+    if (!value) continue;
+    if (kind === 'sel') out.selected.push(value);
+    else if (kind === 'dir') out.folders.push(value);
+  }
+  return out;
+}
+
 let vscodeFolders = { at: 0, list: [] };
 /** Folders VS Code has opened, most recently used first (from its workspaceStorage). Cached 30 s. */
 async function vscodeRecentFolders() {
@@ -207,6 +220,7 @@ export function createProcessInspector() {
     windowsOf,
     focusWindow,
     showInExplorer,
+    explorerSelection,
     vscodeRecentFolders,
   };
 }

@@ -5,6 +5,7 @@
 #   -Mode explorer -Path C:\dir [-Item C:\dir\f.txt]
 #                                             shows the folder in File Explorer (reusing an open window of it),
 #                                             selects the item and brings the window to the front
+#   -Mode selection                           "sel`t<path>" of selected items, "dir`t<folder>" of open Explorer windows
 # VS Code titles end with "<folder> - Visual Studio Code"; terminals own the windows of the shells in them.
 param([string]$Mode = 'names', [string]$Names = '', [string]$Pids = '', [string]$Title = '', [string]$Path = '', [string]$Item = '')
 $ErrorActionPreference = 'SilentlyContinue'
@@ -80,6 +81,19 @@ if ($Mode -eq 'explorer') {
     }
   }
   if ([FlintBenchWindows]::Focus([IntPtr][long]$win.HWND)) { 'focused' } else { 'denied' }
+  exit
+}
+if ($Mode -eq 'selection') {
+  # what File Explorer windows show: "sel`t<path>" per selected item, "dir`t<folder>" per window
+  $shell = New-Object -ComObject Shell.Application
+  foreach ($w in @($shell.Windows())) {
+    try {
+      if ($w.FullName -notlike '*explorer.exe') { continue }
+      foreach ($i in @($w.Document.SelectedItems())) { if ($i.Path) { "sel`t$($i.Path)" } }
+      $dir = $w.Document.Folder.Self.Path
+      if ($dir) { "dir`t$dir" }
+    } catch {}
+  }
   exit
 }
 $windows = [FlintBenchWindows]::All()

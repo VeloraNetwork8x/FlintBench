@@ -53,11 +53,14 @@ export class Router {
     this.routes = [];
   }
 
-  /** access: 'public' | 'session' (locked allowed) | 'unlocked' (default) */
-  add(method, pattern, handler, access = 'unlocked') {
+  /**
+   * access: 'public' | 'session' (locked allowed) | 'unlocked' (default).
+   * raw: the handler reads the request body itself (uploads), it is not parsed as JSON.
+   */
+  add(method, pattern, handler, access = 'unlocked', { raw = false } = {}) {
     const keys = [];
     const regex = new RegExp(`^${pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; })}$`);
-    this.routes.push({ method, regex, keys, handler, access });
+    this.routes.push({ method, regex, keys, handler, access, raw });
   }
 
   get(p, h, a) { this.add('GET', p, h, a); }
@@ -194,7 +197,7 @@ export function createHttpServer({ router, auth, webDir, port, log = console }) 
         auth.touch(session);
       }
 
-      const body = await readJson(req);
+      const body = found.route.raw ? {} : await readJson(req);
       const ctx = {
         req, res, params: found.params, query: url.searchParams, body, token, session,
         userAgent: req.headers['user-agent'],

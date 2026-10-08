@@ -8,6 +8,8 @@ import { createProcessInspector, descendantsOf } from './processes.js';
 import { DockerCli } from './docker-cli.js';
 import { createAgentFiles } from './agent-files.js';
 import { screenshot, findBrowser } from './screenshot.js';
+import { hostTerminalFont } from './terminal-font.js';
+import { locateFiles } from './locate.js';
 
 /**
  * Host Interaction Layer.
@@ -29,6 +31,9 @@ export function createHost({ log = console } = {}) {
     docker: new DockerCli({ log }),
     agentFiles: createAgentFiles(),
     preview: { screenshot, browser: findBrowser },
+    terminalFont: hostTerminalFont,
+    /** Real paths of files dropped into the page, from their name, size and modification time. */
+    locateFiles: (files, folders) => locateFiles(files, { explorer: processes.explorerSelection, folders }),
     desktop: {
       /** The editor on a folder; with `file`, that file opened in the folder's window. */
       openInEditor(command, dir, file = null, { goto = false } = {}) {

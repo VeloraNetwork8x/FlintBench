@@ -15,14 +15,16 @@ export function onAuthLost(kind, fn) {
 }
 
 export async function request(method, url, body) {
+  // a Blob (a dropped file) travels as raw bytes, everything else as JSON
+  const raw = body instanceof Blob;
   const res = await fetch(url, {
     method,
     credentials: 'same-origin',
     headers: {
       'X-FlintBench': '1',
-      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      ...(body === undefined ? {} : { 'Content-Type': raw ? 'application/octet-stream' : 'application/json' }),
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined || raw ? body : JSON.stringify(body),
   });
   const text = await res.text();
   let data = null;

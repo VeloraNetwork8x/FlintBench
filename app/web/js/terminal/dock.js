@@ -4,7 +4,7 @@ import { h, icon, replace } from '../lib/dom.js';
 import { store, subscribe, prefs } from '../lib/store.js';
 import { api, projectUrl } from '../lib/api.js';
 import { attachPty, detachPty, send } from '../lib/ws.js';
-import { attempt, confirmDialog, promptDialog } from '../lib/ui.js';
+import { attempt, confirmDialog, promptDialog, toast } from '../lib/ui.js';
 import { moveToTerminal } from '../views/project/agent-panel.js';
 import { clock } from '../lib/format.js';
 import { agentMark } from '../lib/agent-icons.js';
@@ -52,12 +52,116 @@ function xtermTheme() {
   };
 }
 
+// bundled: Geist Mono for text, the Nerd Font symbols for prompt icons (oh-my-posh, starship)
+const BUNDLED_FONTS = ['Geist Mono', 'Symbols Nerd Font Mono', 'Cascadia Code', 'Consolas'];
+
+/** The owner's own terminal font first (Windows Terminal / VS Code), the bundled ones behind it. */
+function terminalFontFamily() {
+  const host = store.state.terminalFont?.families ?? [];
+  const families = [...host, ...BUNDLED_FONTS.filter((f) => !host.includes(f))];
+  return `${families.map((f) => `"${f}"`).join(', ')}, monospace`;
+}
+
+/** A path as a terminal drop types it: quoted only when the shell would split or mangle it. */
+function quotePath(p) {
+  return /[\s"'`$&()<>|;,^%!]/.test(p) ? `"${p}"` : p;
+}
+
+/** Local paths behind file:// URIs (what editors such as VS Code put on a drag), else none. */
+function droppedPaths(dt) {
+  const uris = (dt.getData('text/uri-list') || '').split(/\r?\n/).map((u) => u.trim()).filter((u) => /^file:\/\//i.test(u));
+  return uris.map((u) => {
+    const url = new URL(u);
+    const p = decodeURIComponent(url.pathname);
+    // file:///C:/x → C:\x on Windows; file://server/share → \\server\share
+    if (store.state.platform !== 'win32') return p;
+    if (url.host) return `\\\\${url.host}${p.replace(/\//g, '\\')}`;
+    return p.replace(/^\/([A-Za-z]:)/, '$1').replace(/\//g, '\\');
+  });
+}
+
+/**
+ * Files dropped or pasted onto a terminal, typed into it as paths (as a native terminal does on a
+ * drop, so an agent such as Claude Code picks them up). The browser never says where a file lives:
+ * the server finds the real file on this machine from its name, size and time. Only one it cannot
+ * find (a pasted screenshot) is copied into the project's FlintBench data, and the copy's path typed.
+ */
+async function attachFiles(id, term, files) {
+  const located = await api.post(`/api/terminals/${id}/locate`, {
+    files: files.map((f) => ({ name: f.name, size: f.size, lastModified: f.lastModified })),
+  }).then((r) => r.paths, () => []);
+  const missing = files.filter((_, i) => !located[i]);
+  if (missing.reduce((n, f) => n + f.size, 0) > 8 * 1024 * 1024) toast(`Copying ${missing.length === 1 ? missing[0].name : `${missing.length} files`}…`);
+  const paths = [];
+  for (const [i, file] of files.entries()) {
+    if (located[i]) {
+      paths.push(located[i]);
+      continue;
+    }
+    try {
+      const r = await api.post(`/api/terminals/${id}/attachments?name=${encodeURIComponent(file.name || 'file')}`, file);
+      paths.push(r.path);
+    } catch (error) {
+      toast(`Could not attach ${file.name || 'the file'}`, { kind: 'err', detail: error.message });
+    }
+  }
+  // a pasted picture has no place of its own; a dropped file that was not found is worth saying
+  const copied = missing.filter((f) => !(f.type.startsWith('image/') && Date.now() - f.lastModified < 10_000));
+  if (copied.length) toast(`${copied.length === 1 ? `${copied[0].name} was` : `${copied.length} files were`} not found on disk: a copy is attached`, { kind: 'warn' });
+  if (paths.length) term.paste(`${paths.map(quotePath).join(' ')} `);
+  term.focus();
+}
+
+function wireDrops(id, term, el) {
+  const accepts = (dt) => dt && [...dt.types].some((t) => t === 'Files' || t === 'text/uri-list' || t === 'text/plain');
+  let depth = 0;
+  const leave = () => { depth = 0; el.classList.remove('drop-target'); };
+  el.addEventListener('dragenter', (e) => {
+    if (!accepts(e.dataTransfer)) return;
+    e.preventDefault();
+    depth++;
+    el.classList.add('drop-target');
+  });
+  el.addEventListener('dragover', (e) => {
+    if (!accepts(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  el.addEventListener('dragleave', () => { if (--depth <= 0) leave(); });
+  el.addEventListener('drop', (e) => {
+    if (!accepts(e.dataTransfer)) return;
+    e.preventDefault();
+    leave();
+    const dt = e.dataTransfer;
+    const local = droppedPaths(dt);
+    if (local.length) {
+      term.paste(`${local.map(quotePath).join(' ')} `);
+      term.focus();
+      return;
+    }
+    const files = [...dt.files];
+    if (files.length) return attachFiles(id, term, files);
+    const text = dt.getData('text/plain');
+    if (text) {
+      term.paste(text);
+      term.focus();
+    }
+  });
+  // a picture on the clipboard (a screenshot) pasted with Ctrl+V: attached like a dropped file
+  el.addEventListener('paste', (e) => {
+    const files = [...(e.clipboardData?.files ?? [])];
+    if (!files.length || e.clipboardData.getData('text/plain')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    attachFiles(id, term, files);
+  }, true);
+}
+
 function instance(id) {
   let inst = instances.get(id);
   if (inst) return inst;
   const term = new Terminal({
-    // bundled: Geist Mono for text, the Nerd Font symbols for prompt icons (oh-my-posh, starship)
-    fontFamily: '"Geist Mono", "Symbols Nerd Font Mono", "Cascadia Code", Consolas, monospace',
+    fontFamily: terminalFontFamily(),
     fontSize: 13,
     lineHeight: 1.35,
     fontWeight: '400',
@@ -109,6 +213,7 @@ function instance(id) {
     },
   });
   const el = h('div.dock-term');
+  wireDrops(id, term, el);
   inst = { term, fit, el, opened: false, exitNoted: false };
   instances.set(id, inst);
   attachPty(id, {

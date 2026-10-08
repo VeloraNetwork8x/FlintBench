@@ -62,6 +62,7 @@ export function createRoutes(app) {
     integrations: await app.integrations(),
     terminals: host.pty.list(),
     platform: host.platform,
+    terminalFont: await host.terminalFont(),
     dataDir: app.config.dataDir,
     lastScanAt: projects.lastScanAt ?? null,
     rootSuggestions: await app.rootSuggestions(),
@@ -206,6 +207,10 @@ export function createRoutes(app) {
   r.post('/api/terminals/:tid/transfer/cancel', ({ params }) => agents.cancelMove({ terminalId: params.tid }));
   r.post('/api/terminals/:tid/stop', ({ params }) => { terminals.get(params.tid); host.pty.stop(params.tid); });
   r.delete('/api/terminals/:tid', ({ params }) => { terminals.remove(params.tid); });
+  // files dropped onto the terminal: their real paths on this machine, from name, size and time
+  r.post('/api/terminals/:tid/locate', ({ params, body }) => terminals.locateFiles(params.tid, body?.files));
+  // a dropped file that could not be found, or a pasted picture: raw bytes in, the path of FlintBench's copy out
+  r.add('POST', '/api/terminals/:tid/attachments', ({ params, query, req }) => terminals.saveAttachment(params.tid, query.get('name'), req, Number(req.headers['content-length']) || 0), 'unlocked', { raw: true });
 
   /* ---------- agents ---------- */
   r.get('/api/agents', () => agents.overview());

@@ -11,6 +11,7 @@ const state = {
   terminals: new Map(),
   platform: '',
   dataDir: '',
+  terminalFont: null, // { families, source } read from the owner's own terminal
   connected: false,
   lastEvent: null,
   lastScanAt: null,
@@ -61,6 +62,7 @@ export const store = {
     state.terminals = new Map(b.terminals.map((t) => [t.id, t]));
     state.platform = b.platform;
     state.dataDir = b.dataDir;
+    state.terminalFont = b.terminalFont ?? null;
     state.lastScanAt = b.lastScanAt;
     state.rootSuggestions = b.rootSuggestions ?? [];
     ['projects', 'candidates', 'agents', 'settings', 'terminals', 'integrations'].forEach(notify);
