@@ -29,6 +29,7 @@ const VENDOR = {
   '/vendor/xterm/xterm.mjs': require.resolve('@xterm/xterm/lib/xterm.mjs'),
   '/vendor/xterm/xterm.css': require.resolve('@xterm/xterm/css/xterm.css'),
   '/vendor/xterm/addon-fit.mjs': require.resolve('@xterm/addon-fit/lib/addon-fit.mjs'),
+  '/vendor/xterm/addon-webgl.mjs': require.resolve('@xterm/addon-webgl/lib/addon-webgl.mjs'),
 };
 
 export function parseCookies(header = '') {

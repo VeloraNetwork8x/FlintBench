@@ -1,14 +1,20 @@
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { run, IS_WIN, which } from './exec.js';
+import { spawn } from 'node:child_process';
+import { run, IS_WIN, which, killTree, yieldPriority } from './exec.js';
 
-const WIN_CWD_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'win-cwd.ps1');
+const WIN_PROCS_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'win-procs.ps1');
+const WIN_PROCS_BUILD = path.join(path.dirname(fileURLToPath(import.meta.url)), 'win-procs-build.ps1');
+const WIN_PROCS_DLL = path.join(os.tmpdir(), 'flintbench-procs-v2.dll');
 const WIN_WINDOWS_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'win-windows.ps1');
+const psQuote = (text) => `'${String(text).replaceAll("'", "''")}'`;
 
 async function windowsScript(args) {
   const shell = which('powershell') ?? which('pwsh');
-  const r = await run(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', WIN_WINDOWS_SCRIPT, ...args], { timeout: 20_000 }).catch(() => null);
+  const r = await run(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', WIN_WINDOWS_SCRIPT, ...args], { timeout: 20_000, background: true }).catch(() => null);
   return (r?.stdout.split(/\r?\n/) ?? []).map((line) => line.trim()).filter(Boolean);
 }
 
@@ -20,7 +26,8 @@ const parseWindow = (line) => {
 /** Visible top-level window titles of the given process names (Windows only). */
 async function windowTitles(names) {
   if (!IS_WIN || !names.length) return [];
-  return (await windowsScript(['-Mode', 'names', '-Names', names.join(',')])).map(parseWindow).filter(Boolean);
+  const out = await session.ask(`& ${psQuote(WIN_WINDOWS_SCRIPT)} -Mode names -Names ${psQuote(names.join(','))}`).catch(() => '');
+  return out.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map(parseWindow).filter(Boolean);
 }
 
 /** Visible top-level windows owned by the given pids (Windows only). */
@@ -81,20 +88,95 @@ async function vscodeRecentFolders() {
   return list;
 }
 
-const WIN_PS_SCRIPT = [
-  '$ErrorActionPreference="SilentlyContinue";',
-  '[Console]::OutputEncoding=[Text.Encoding]::UTF8;',
-  'Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,CreationDate | ForEach-Object {',
-  '  $c = if ($_.CommandLine) { $_.CommandLine -replace "[\\t\\r\\n]", " " } else { "" };',
-  '  $t = if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() } else { 0 };',
-  '  "$($_.ProcessId)`t$($_.ParentProcessId)`t$t`t$($_.Name)`t$c"',
-  '}',
-].join(' ');
+/**
+ * One PowerShell kept open for the frequent questions (Windows): the process list, working folders,
+ * window titles. A new PowerShell per question cost a process launch each time, and the old scan
+ * went through WMI, which choked while agents started and ended processes by the hundred (scans
+ * past 20 s, and every other WMI user on the machine waiting with them). The session loads
+ * win-procs.ps1 once: native calls, no WMI, ~0.1 s a scan. Below normal priority; one question at
+ * a time; one not answered in time takes the session down and the next starts a new one. It ends
+ * with FlintBench (its input closes).
+ */
+const ANSWER_END = '<<flintbench-answer-end>>';
+
+// the native helper is compiled once, on its own (normal priority, no time limit: a busy machine can
+// take a minute); the session uses WMI until the DLL is there, then loads it by itself
+let helperBuild = null;
+function buildNativeHelper() {
+  if (!IS_WIN || helperBuild || existsSync(WIN_PROCS_DLL)) return;
+  const shell = which('powershell') ?? which('pwsh');
+  helperBuild = run(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', WIN_PROCS_BUILD], { timeout: 10 * 60_000 }).catch(() => null);
+}
+const session = {
+  ps: null,
+  out: '',
+  waiting: null, // { resolve, reject, timer }
+  queue: Promise.resolve(),
+  start() {
+    const shell = which('powershell') ?? which('pwsh');
+    const ps = spawn(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '-'], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+    yieldPriority(ps.pid);
+    ps.stdout.setEncoding('utf8');
+    ps.stdout.on('data', (chunk) => {
+      this.out += chunk;
+      const end = this.out.indexOf(ANSWER_END);
+      if (end === -1 || !this.waiting) return;
+      const text = this.out.slice(0, end);
+      this.out = this.out.slice(this.out.indexOf('\n', end) + 1 || this.out.length);
+      const { resolve, timer } = this.waiting;
+      this.waiting = null;
+      clearTimeout(timer);
+      resolve(text);
+    });
+    const gone = () => {
+      if (this.ps !== ps) return;
+      this.ps = null;
+      this.out = '';
+      if (this.waiting) {
+        const { reject, timer } = this.waiting;
+        this.waiting = null;
+        clearTimeout(timer);
+        reject(new Error('the PowerShell session ended'));
+      }
+    };
+    ps.on('exit', gone);
+    ps.on('error', gone);
+    ps.stdin.on('error', () => {});
+    ps.stdin.write(`. ${psQuote(WIN_PROCS_SCRIPT)}\n`);
+    this.ps = ps;
+  },
+  stop() {
+    const ps = this.ps;
+    this.ps = null;
+    if (ps) killTree(ps.pid);
+  },
+  /** One PowerShell line; resolves to what it printed. The first one also waits for the helper to load. */
+  ask(command, timeout = 20_000) {
+    const job = this.queue.then(() => new Promise((resolve, reject) => {
+      // a new session loads the helper first (the very first time it compiles it: can take a while)
+      if (!this.ps) {
+        buildNativeHelper();
+        this.start();
+      }
+      const timer = setTimeout(() => {
+        this.waiting = null;
+        this.stop();
+        reject(new Error(`no answer within ${timeout / 1000} s`));
+      }, timeout);
+      this.waiting = { resolve, reject, timer };
+      this.ps.stdin.write(`${command}; "${ANSWER_END}"\n`);
+    }));
+    this.queue = job.catch(() => {});
+    return job;
+  },
+};
+process.once('exit', () => session.stop());
 
 async function listWindows() {
-  const shell = which('powershell') ?? which('pwsh');
-  const r = await run(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WIN_PS_SCRIPT], { timeout: 20_000 });
-  return r.stdout.split(/\r?\n/).filter(Boolean).map((line) => {
+  const stdout = await session.ask('FbList').catch((error) => {
+    throw new Error(`process scan: ${error.message}`);
+  });
+  return stdout.split(/\r?\n/).filter(Boolean).map((line) => {
     const [pid, ppid, started, name, ...cmd] = line.split('\t');
     return { pid: Number(pid), ppid: Number(ppid), startedAt: Number(started) || null, name: name ?? '', cmd: cmd.join('\t') };
   }).filter((p) => p.pid);
@@ -110,8 +192,8 @@ async function listUnix() {
 }
 
 async function portsWindows() {
-  const r = await run('netstat', ['-ano', '-p', 'TCP'], { timeout: 10_000 });
-  const r6 = await run('netstat', ['-ano', '-p', 'TCPv6'], { timeout: 10_000 }).catch(() => ({ stdout: '' }));
+  const r = await run('netstat', ['-ano', '-p', 'TCP'], { timeout: 10_000, background: true });
+  const r6 = await run('netstat', ['-ano', '-p', 'TCPv6'], { timeout: 10_000, background: true }).catch(() => ({ stdout: '' }));
   const ports = [];
   for (const line of `${r.stdout}\n${r6.stdout}`.split(/\r?\n/)) {
     const cols = line.trim().split(/\s+/);
@@ -170,15 +252,14 @@ function dedupePorts(ports) {
 // pid -> working directory (null when unreadable); pruned to the pids still asked about
 const winCwdCache = new Map();
 
-/** Working directories of several Windows processes in one PowerShell call (see win-cwd.ps1). */
+/** Working directories of several Windows processes, asked of the PowerShell session (see win-procs.ps1). */
 async function cwdsWindows(pids) {
   for (const pid of [...winCwdCache.keys()]) if (!pids.includes(pid)) winCwdCache.delete(pid);
   const missing = pids.filter((pid) => !winCwdCache.has(pid));
   if (missing.length) {
-    const shell = which('powershell') ?? which('pwsh');
-    const r = await run(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', WIN_CWD_SCRIPT, '-Pids', missing.join(',')], { timeout: 20_000 }).catch(() => null);
+    const stdout = await session.ask(`FbCwds ${psQuote(missing.join(','))}`).catch(() => '');
     const found = new Map();
-    for (const line of r?.stdout.split(/\r?\n/) ?? []) {
+    for (const line of stdout.split(/\r?\n/)) {
       const tab = line.indexOf('\t');
       if (tab > 0) found.set(Number(line.slice(0, tab)), line.slice(tab + 1).trim());
     }

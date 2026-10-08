@@ -1,5 +1,6 @@
 import { Terminal } from '/vendor/xterm/xterm.mjs';
 import { FitAddon } from '/vendor/xterm/addon-fit.mjs';
+import { WebglAddon } from '/vendor/xterm/addon-webgl.mjs';
 import { h, icon, replace } from '../lib/dom.js';
 import { store, subscribe, prefs } from '../lib/store.js';
 import { api, projectUrl } from '../lib/api.js';
@@ -13,6 +14,30 @@ import { transcriptView, refreshTranscript, disposeTranscript, disposeAllTranscr
 
 // xterm instances outlive views: switching tabs or projects keeps scrollback and state.
 const instances = new Map(); // terminalId -> { term, fit, el, opened, exitNoted }
+
+/**
+ * The terminal on screen draws with WebGL (the GPU): agents' interfaces redraw many times a second
+ * and the DOM renderer made typing lag. One at a time: a page gets few WebGL contexts and a hidden
+ * terminal has nothing to draw. Without WebGL, or after a lost context, xterm draws with the DOM.
+ */
+let webglOn = null; // { inst, addon }
+
+function dropWebgl() {
+  const on = webglOn;
+  webglOn = null;
+  try { on?.addon.dispose(); } catch { /* already gone with its terminal */ }
+}
+
+function useWebgl(inst) {
+  if (webglOn?.inst === inst) return;
+  dropWebgl();
+  try {
+    const addon = new WebglAddon();
+    addon.onContextLoss(() => { if (webglOn?.addon === addon) dropWebgl(); });
+    inst.term.loadAddon(addon);
+    webglOn = { inst, addon };
+  } catch { /* no WebGL here: the DOM renderer stays */ }
+}
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -191,6 +216,13 @@ function instance(id) {
       return false;
     }
     if ((e.ctrlKey || e.metaKey) && k === 'v') return false;
+    // Ctrl+Enter / Shift+Enter: a new line in the message, not "send" (a line feed, as Ctrl+J:
+    // Claude Code and Codex take it as a line break; plain Enter still sends)
+    if (e.key === 'Enter' && (e.ctrlKey || e.shiftKey) && !e.altKey && !e.metaKey) {
+      e.preventDefault();
+      send({ t: 'pty.in', id, d: '\n' });
+      return false;
+    }
     return true;
   });
   term.onData((d) => send({ t: 'pty.in', id, d }));
@@ -240,6 +272,7 @@ function disposeTerminal(id) {
   const inst = instances.get(id);
   if (!inst) return;
   detachPty(id);
+  if (webglOn?.inst === inst) dropWebgl();
   inst.term.dispose();
   inst.el.remove();
   instances.delete(id);
@@ -391,6 +424,7 @@ export function createDock(projectId) {
       inst.term.open(inst.el);
       inst.opened = true;
     }
+    useWebgl(inst);
     noteExit(t.id);
     requestAnimationFrame(fitActive);
   }

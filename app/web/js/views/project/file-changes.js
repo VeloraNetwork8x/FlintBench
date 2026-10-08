@@ -45,13 +45,16 @@ function stateOf(f) {
 
 const rowKey = (f) => JSON.stringify([f.path, f.at, f.added, f.removed, f.saves, f.uncommitted, (f.commits ?? []).map((c) => c.sha)]);
 
+// each project's last list: switching back draws it at once, then it is read again
+const lastLists = new Map(); // projectId -> file-changes data
+
 export function createFileChanges(ctx) {
   const list = h('ul.fc-list', { 'aria-label': 'Files changed' });
   const more = h('button.btn.sm.ghost.fc-more', { type: 'button', hidden: true });
   const foot = h('p.ov-foot');
   const el = h('div.fc', list, more, foot);
   const meta = h('span.faint.small');
-  let data = null;
+  let data = lastLists.get(ctx.projectId) ?? null;
   let failed = false;
   let all = false;
   let win = null; // the floating diff window, while open
@@ -173,6 +176,7 @@ export function createFileChanges(ctx) {
     const r = await api.get(projectUrl(ctx.projectId, `/file-changes?days=${DAYS}`)).catch(() => null);
     if (!r) { failed = !data; draw(); return; }
     data = r;
+    lastLists.set(ctx.projectId, r);
     failed = false;
     meta.replaceChildren(...(data.files.length ? [counts(data.added, data.removed), ` · ${plural(data.total, 'file')} · ${DAYS} days`] : []));
     draw();

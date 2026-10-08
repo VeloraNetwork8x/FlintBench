@@ -3,7 +3,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { httpError } from '../host/paths.js';
 
-const EDITOR_POLL_MS = 3000;
+const EDITOR_POLL_MS = 10_000;
+// the full process scan: every 15 s on a quiet machine, further apart when a scan is slow (a busy
+// machine: agents and dev servers at work), up to two minutes; never two at once
+const SCAN_MIN_MS = 15_000;
+const SCAN_MAX_MS = 120_000;
 // editors whose window title ends with "<folder> - <suffix>", by command name
 const EDITOR_WINDOWS = {
   code: { process: 'Code', suffix: 'Visual Studio Code' },
@@ -140,17 +144,16 @@ export class RuntimeService {
     this.host.pty.on('exit', (t) => this.#onExit(t));
     this.projects.on('added', (s) => this.publish(s.id).catch(() => {}));
     for (const id of this.projects.live.keys()) await this.publish(id);
-    this.monitor().catch(() => {});
-    this.timer = setInterval(() => this.monitor().catch(() => {}), 15_000);
-    this.timer.unref();
+    this.#scanLoop(0);
     // VS Code opening and closing shows on the cards within seconds: its window titles alone are
-    // read often (about 0.25 s each); the full process scan stays at 15 s
+    // read more often than the full process scan, and only while VS Code runs
     this.editorTimer = setInterval(() => this.#pollEditors(), EDITOR_POLL_MS);
     this.editorTimer.unref();
   }
 
   stop() {
-    clearInterval(this.timer);
+    this.stopped = true;
+    clearTimeout(this.timer);
     clearInterval(this.editorTimer);
   }
 
@@ -398,7 +401,8 @@ export class RuntimeService {
       const started = new Map(code.map((p) => [p.pid, p.startedAt]));
       // a window opened since the last process scan has no start time yet: keep the one known
       const sinceOf = (id, pid) => started.get(pid) ?? this.projects.live.get(id)?.editors?.find((e) => e.id === 'vscode')?.since ?? Date.now();
-      const titles = await this.host.processes.windowTitles(['Code']);
+      // no VS Code in the last scan: no window to read (a new one shows at the next scan)
+      const titles = code.length ? await this.host.processes.windowTitles(['Code']) : [];
       const projects = [...this.projects.live.values()].filter((s) => s.exists);
       const base = (p) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop().toLowerCase();
       for (const { pid, title } of titles) {
@@ -491,6 +495,21 @@ export class RuntimeService {
     return { ...r, app: byPid.get(owner)?.name ?? null };
   }
 
+  /** The periodic scan: the next one waits longer when this one was slow (or failed). */
+  #scanLoop(delay) {
+    clearTimeout(this.timer);
+    this.timer = setTimeout(async () => {
+      const started = Date.now();
+      const ok = await this.monitor().then(() => !this.lastScanFailed, () => false);
+      const took = Date.now() - started;
+      // a scan taking 3 s waits 15 s; one taking 8 s waits 48 s; a failed one waits a minute or more
+      const next = ok ? Math.min(SCAN_MAX_MS, Math.max(SCAN_MIN_MS, took * 6)) : Math.min(SCAN_MAX_MS, Math.max(60_000, took * 6));
+      this.scanInterval = next;
+      if (!this.stopped) this.#scanLoop(next);
+    }, delay);
+    this.timer.unref?.();
+  }
+
   /** Periodic process + port snapshot (reconciliation; there is no portable process event API). */
   async monitor() {
     if (this.monitoring) {
@@ -499,6 +518,7 @@ export class RuntimeService {
       return;
     }
     this.monitoring = true;
+    this.lastScanFailed = false;
     try {
       const [processes, ports] = await Promise.all([
         this.host.processes.list(),
@@ -589,7 +609,8 @@ export class RuntimeService {
       this.started = true;
       for (const s of projects) await this.publish(s.id);
     } catch (error) {
-      this.log.warn(`[runtime] process scan failed: ${error.message}`);
+      this.lastScanFailed = true;
+      this.log.warn(`[runtime] process scan failed: ${error.message} (next one in a minute or more)`);
     } finally {
       this.monitoring = false;
       if (this.monitorAgain) {

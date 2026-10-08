@@ -182,10 +182,24 @@ export function mount(container, route) {
     }, body, close);
   }
 
+  // what the header shows, as text: an update that changes none of it draws nothing
+  let headKey = '';
+  function headSignature(p, open) {
+    const tabSig = (x) => {
+      const q = store.project(x.id);
+      const busy = (q?.agents?.active ?? []).map((s) => `${s.agent}${s.busy ? '*' : ''}`).join(',');
+      return [x.id, x.tab, q?.name, q?.path, projectStatus(q).label, q?.git?.branch, q?.git?.detached, busy, closing.has(x.id)].join('|');
+    };
+    return [tab, p.running, p.exists, canStart(p), ...open.map(tabSig)].join('\n');
+  }
+
   function renderHead() {
     const p = store.project(projectId);
     if (!p) return;
     const open = openProjects();
+    const key = headSignature(p, open.some((x) => x.id === projectId) ? open : [{ id: projectId, tab }]);
+    if (key === headKey) return;
+    headKey = key;
     replace(head,
       h('div.p-wtabs', { role: 'tablist', 'aria-label': 'Open projects' }, (open.some((x) => x.id === projectId) ? open : [{ id: projectId, tab }]).map(projectTab)),
       h('div.actions',

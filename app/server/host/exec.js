@@ -1,3 +1,4 @@
+import os from 'node:os';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -127,11 +128,20 @@ export function commandFor(file, args) {
   return { file, args, verbatim: false };
 }
 
+/** Lowers a process we started below the owner's own work (it keeps running, it just yields the CPU). */
+export function yieldPriority(pid) {
+  if (!pid) return;
+  try {
+    os.setPriority(pid, os.constants.priority.PRIORITY_BELOW_NORMAL);
+  } catch { /* gone already, or not allowed */ }
+}
+
 /**
  * Runs a program without a shell and collects output.
  * Resolves with { code, stdout, stderr }; rejects only on spawn failure or timeout.
+ * `background`: a helper FlintBench runs for itself (process scans, window titles), below normal priority.
  */
-export function run(program, args = [], { cwd, timeout = 20_000, env, input, maxBuffer = 16 * 1024 * 1024 } = {}) {
+export function run(program, args = [], { cwd, timeout = 20_000, env, input, maxBuffer = 16 * 1024 * 1024, background = false } = {}) {
   return new Promise((resolve, reject) => {
     const file = which(program) ?? program;
     let command;
@@ -148,6 +158,7 @@ export function run(program, args = [], { cwd, timeout = 20_000, env, input, max
       windowsVerbatimArguments: command.verbatim,
       stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
+    if (background) yieldPriority(child.pid);
     const out = [];
     const err = [];
     let size = 0;

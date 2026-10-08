@@ -22,7 +22,11 @@ import { relocationText, relocationActions } from '../../lib/relocation.js';
  */
 // the preview takes a fresh picture this often while it is on screen: each one starts a headless
 // browser, so not too often
-const PREVIEW_REFRESH_MS = 2 * 60_000;
+const PREVIEW_REFRESH_MS = 5 * 60_000;
+// each project's last summary: switching back to a project draws it at once, then it is read again
+const lastData = new Map(); // projectId -> resume data
+// the overview's summary (git, activity, files changed) is read again at most this often
+const OVERVIEW_RELOAD_MS = 8000;
 const NOTE_TYPES = [['note', 'Note'], ['decision', 'Decision'], ['goal', 'Goal'], ['constraint', 'Constraint'], ['state', 'State']];
 const NOTE_LABEL = Object.fromEntries(NOTE_TYPES);
 const NOTE_HINTS = {
@@ -112,8 +116,9 @@ export function render(ctx) {
   const notesList = h('ul.note-list', { 'aria-label': 'Project notes' });
   const addBtn = actionButton('Add', () => addNote(), { cls: 'btn sm primary', title: 'Add the note (Ctrl+Enter)' });
   const notesEl = h('div.notes', typeTabs, noteInput, h('div.note-actions', h('span.faint.small', 'Ctrl+Enter to add'), h('span.spacer'), addBtn), notesList);
-  let data = null;
+  let data = lastData.get(ctx.projectId) ?? null;
   let timer = 0;
+  let lastLoad = 0; // when the summary was last read
   let recentOpen = false; // "Show more" on Recent activity stays open across live updates
   // Files changed (profile Test): kept across redraws, like the notes
   const fileChanges = createFileChanges(ctx);
@@ -172,7 +177,10 @@ export function render(ctx) {
   renderNotes();
 
   async function load() {
-    data = await api.get(projectUrl(ctx.projectId, '/resume')).catch(() => null);
+    lastLoad = Date.now();
+    // a failed read keeps what is on screen
+    data = (await api.get(projectUrl(ctx.projectId, '/resume')).catch(() => null)) ?? data;
+    if (data) lastData.set(ctx.projectId, data);
     if (has('overview.files')) fileChanges.load();
     if (data && !notesLoaded) await loadNotes();
     draw();
@@ -312,7 +320,7 @@ export function render(ctx) {
   function buildPreview(p, target, targets) {
     previewUrl = target?.url ?? null;
     const label = target?.label ?? 'The dev server';
-    const src = (fresh) => projectUrl(ctx.projectId, `/preview?url=${encodeURIComponent(target.url)}${fresh ? `&fresh=${Date.now()}` : ''}`);
+    const src = (fresh, kept) => projectUrl(ctx.projectId, `/preview?url=${encodeURIComponent(target.url)}${fresh ? `&fresh=${Date.now()}` : ''}${kept ? '&kept=1' : ''}`);
     const state = h('div.preview-state', 'Capturing the page…');
     const img = h('img.preview-img', { alt: `Preview of ${label}`, title: target ? `Open ${target.label}` : '' });
     const box = h(`${target ? 'a' : 'div'}.preview-box.is-loading`, target ? { href: target.url, target: '_blank', rel: 'noopener noreferrer' } : {}, img, state);
@@ -351,14 +359,14 @@ export function render(ctx) {
         say();
       },
       /** One picture of the page (the server takes it a few seconds in, past the usual loader). */
-      async reload(fresh) {
+      async reload(fresh, { kept = false } = {}) {
         if (loading || !target) return;
         loading = true;
         if (!img.getAttribute('src') || current.offline) box.classList.add('is-loading');
         state.textContent = 'Capturing the page…';
         try {
           // fetched rather than set as <img src>: a stopped server answers 503 "offline", not a broken image
-          const res = await fetch(src(fresh), { credentials: 'same-origin' });
+          const res = await fetch(src(fresh, kept), { credentials: 'same-origin' });
           if (res.status === 503) { await current.setOffline(); return; }
           if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? `HTTP ${res.status}`);
           current.offline = false;
@@ -381,7 +389,9 @@ export function render(ctx) {
     };
     preview = current;
     if (target) {
-      current.reload(false);
+      // opening the overview (or switching back to the project) starts no browser when a picture
+      // exists: a capture of a dev server makes it compile the page
+      current.reload(false, { kept: true });
       clearInterval(previewTimer);
       previewTimer = setInterval(() => { if (document.visibilityState === 'visible' && !current.offline) current.reload(true); }, PREVIEW_REFRESH_MS);
     } else {
@@ -468,8 +478,10 @@ export function render(ctx) {
   return {
     el,
     update() {
-      clearTimeout(timer);
-      timer = setTimeout(load, 1200);
+      // a quiet project reloads 1.2 s after a change; a busy one (agents writing) every 8 s at most
+      if (timer) return;
+      const wait = Math.max(1200, lastLoad + OVERVIEW_RELOAD_MS - Date.now());
+      timer = setTimeout(() => { timer = 0; load(); }, wait);
     },
     destroy() {
       clearTimeout(timer);

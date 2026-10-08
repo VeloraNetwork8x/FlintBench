@@ -1,3 +1,4 @@
+import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -171,6 +172,18 @@ export async function startFlintBench(config = loadConfig(), log = console) {
     server.once('error', reject);
     server.listen(config.port, config.host, resolve);
   });
+  // "localhost" resolves to ::1 first on Windows: with nothing listening there, every new connection
+  // of the page waited for IPv6 to fail (~0.2 s, up to 2 s) before trying 127.0.0.1. The IPv6
+  // loopback answers too, through the same handlers; still loopback only.
+  const ipv6 = config.host === '127.0.0.1' ? http.createServer() : null;
+  if (ipv6) {
+    ipv6.on('request', (req, res) => server.emit('request', req, res));
+    ipv6.on('upgrade', (req, socket, head) => server.emit('upgrade', req, socket, head));
+    ipv6.on('error', (error) => log.warn(`[http] no IPv6 loopback (${error.code ?? error.message}): localhost may connect a little slower`));
+    ipv6.headersTimeout = server.headersTimeout;
+    ipv6.requestTimeout = server.requestTimeout;
+    ipv6.listen(config.port, '::1');
+  }
 
   let stopping = false;
   async function stop() {
@@ -179,6 +192,7 @@ export async function startFlintBench(config = loadConfig(), log = console) {
     aggregator.stop();
     hub.close();
     server.close();
+    ipv6?.close();
     for (const svc of [projects, git, github, docker, runtime, agents, insights, history, auth]) svc.stop?.();
     host.pty.disposeAll();
     await new Promise((r) => setTimeout(r, 200));

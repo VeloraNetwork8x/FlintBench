@@ -32,7 +32,21 @@ export function subscribe(topics, fn) {
   return () => list.forEach((t) => subs.get(t)?.delete(fn));
 }
 
+// project state can change many times a second while agents write files: views redraw for it at
+// most this often (the last change always arrives)
+const PROJECT_REDRAW_MS = 300;
+const lastRedraw = new Map(); // topic -> time it last went out
+const held = new Map(); // topic -> timer of the update waiting its turn
+
 export function notify(topic) {
+  if (topic === 'projects' || topic.startsWith('project:')) {
+    const wait = PROJECT_REDRAW_MS - (performance.now() - (lastRedraw.get(topic) ?? -Infinity));
+    if (wait > 0) {
+      if (!held.has(topic)) held.set(topic, setTimeout(() => { held.delete(topic); notify(topic); }, wait));
+      return;
+    }
+    lastRedraw.set(topic, performance.now());
+  }
   pending.add(topic);
   if (frame) return;
   frame = requestAnimationFrame(() => {

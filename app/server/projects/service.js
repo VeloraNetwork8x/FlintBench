@@ -110,13 +110,14 @@ export class ProjectService extends EventEmitter {
     s.needsAttention = s.attention.some((a) => a.severity !== 'info');
   }
 
+  // changes in a burst (agents writing files, a build) reach the page as one update per window
   #scheduleEmit(id) {
     if (this.pendingEmit.has(id)) return;
     this.pendingEmit.set(id, setTimeout(() => {
       this.pendingEmit.delete(id);
       const summary = this.summary(id);
       if (summary) this.emit('state', summary);
-    }, 150));
+    }, 450));
   }
 
   async #activate(project) {

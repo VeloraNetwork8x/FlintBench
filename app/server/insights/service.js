@@ -18,6 +18,9 @@ function dayKey(ts) {
  * Deterministic insights built only from local facts: attention indicators,
  * the "Where was I?" resume snapshot, and secondary analytics. No AI summaries.
  */
+// how long a project's summary and files changed stay valid (see #memo)
+const MEMO_MS = 15_000;
+
 export class InsightsService {
   constructor({ projects, host, storage, git, work, agents, history = null, log = console }) {
     this.projects = projects;
@@ -30,6 +33,21 @@ export class InsightsService {
     this.log = log;
     this.todos = new Map();
     this.analyticsCache = new Map();
+    this.memo = new Map(); // key -> { at, promise }
+  }
+
+  /**
+   * The overview's reads (git log, the activity log, the last agent transcript) cost a few hundred
+   * ms on a quiet machine and seconds while agents run git too; switching between projects asked
+   * for them every time. A result is kept MEMO_MS, and one already being computed is shared.
+   */
+  #memo(key, compute) {
+    const hit = this.memo.get(key);
+    if (hit && Date.now() - hit.at < MEMO_MS) return hit.promise;
+    const promise = compute();
+    this.memo.set(key, { at: Date.now(), promise });
+    promise.catch(() => { if (this.memo.get(key)?.promise === promise) this.memo.delete(key); });
+    return promise;
   }
 
   init() {
@@ -240,7 +258,12 @@ export class InsightsService {
    * of the window (made while FlintBench was not running, too). Files seen changing before the
    * history existed are listed without line counts.
    */
-  async fileChanges(id, { days = 7 } = {}) {
+  fileChanges(id, { days = 7 } = {}) {
+    this.projects.get(id); // unknown project: 404 now, not a cached failure
+    return this.#memo(`${id}:files:${days}`, () => this.#fileChanges(id, { days }));
+  }
+
+  async #fileChanges(id, { days = 7 } = {}) {
     const s = this.projects.get(id);
     const since = Date.now() - Math.min(90, Math.max(1, Number(days) || 7)) * DAY;
     const observed = this.history && s.exists ? await this.history.files(id, { since }).catch(() => null) : null;
@@ -308,7 +331,12 @@ export class InsightsService {
   }
 
   /** "Where was I?" — assembled deterministically from local state. */
-  async resume(id) {
+  resume(id) {
+    this.projects.get(id);
+    return this.#memo(`${id}:resume`, () => this.#resume(id));
+  }
+
+  async #resume(id) {
     const s = this.projects.get(id);
     const data = await this.storage.project(id);
     const events = await data.activity.read({ limit: 400 });

@@ -4,6 +4,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 import WebSocket from 'ws';
+import { killTree, yieldPriority } from './exec.js';
 
 /**
  * Screenshots of a project's own local web pages, for the Overview preview. Pages are not framed
@@ -55,6 +56,11 @@ export function reachable(url, timeout = 1500) {
 // browser kept short (several pictures a visit made the machine sluggish).
 export const SHOT_AT_MS = [5000];
 const sessions = new Map(); // url -> [deferred] while a visit is under way
+// after a browser that would not start or a page that failed: no new browser for a while (a busy
+// machine only gets busier with every retry); the page shows the last picture meanwhile
+const COOL_DOWN_MS = 2 * 60_000;
+let coolUntil = 0;
+const busy = () => Object.assign(new Error('Previews are paused for a moment: the machine is busy'), { status: 429, expose: true, reason: 'busy' });
 
 function deferred() {
   let resolve;
@@ -77,40 +83,72 @@ export function screenshot(url, { width = 1280, height = 800, maxAgeMs = 20_000,
   if (running) return running[i].promise;
   const hit = cache.get(url);
   if (!fresh && hit && Date.now() - hit.at < maxAgeMs) return Promise.resolve(hit.png);
+  if (Date.now() < coolUntil) return Promise.reject(busy());
   const shots = SHOT_AT_MS.map(deferred);
   sessions.set(url, shots);
   const job = queue.then(async () => {
     if (!(await reachable(url))) throw offline(url);
-    await capture(url, width, height, (n, png) => shots[n].resolve(png));
+    const onShot = (n, png) => shots[n].resolve(png);
+    // a profile still held by a browser that is closing (Chromium exit code 21): once more, a second later
+    await capture(url, width, height, onShot).catch(async (error) => {
+      if (!/quit at start \(21\)/.test(error.message)) throw error;
+      await sleep(1000);
+      return capture(url, width, height, onShot);
+    });
   });
   queue = job.catch(() => {});
   job.then(
     () => shots.at(-1).promise.then((png) => cache.set(url, { at: Date.now(), png })),
-    (error) => shots.forEach((d) => d.reject(error)),
+    (error) => {
+      if (error.reason !== 'offline') coolUntil = Date.now() + COOL_DOWN_MS;
+      shots.forEach((d) => d.reject(error));
+    },
   ).finally(() => sessions.delete(url));
   return shots[i].promise;
+}
+
+/** A loopback TCP port nothing listens on right now. */
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
 }
 
 async function capture(url, width, height, onShot) {
   const browser = findBrowser();
   if (!browser) throw Object.assign(new Error('No Chrome, Edge or Brave found for previews'), { status: 404, expose: true });
-  const port = 9500 + Math.floor(Math.random() * 400);
-  const profile = path.join(os.tmpdir(), 'flintbench-preview-profile');
+  // a profile of its own per FlintBench (by its port): two instances never lock each other out
+  const profile = path.join(os.tmpdir(), `flintbench-preview-profile-${process.env.FLINTBENCH_PORT || 4477}`);
+  // a debugging port the system says is free (a random pick could collide with a dev server)
+  const port = await freePort();
+  // as light as a browser gets: one renderer, nothing in the background, below normal priority
   const child = spawn(browser, [
     '--headless=new', '--disable-gpu', '--hide-scrollbars', '--mute-audio', '--no-first-run', '--no-default-browser-check',
+    '--disable-extensions', '--disable-background-networking', '--disable-component-update', '--disable-default-apps',
+    '--disable-sync', '--no-pings', '--renderer-process-limit=1', '--disable-features=Translate,MediaRouter,OptimizationHints',
     `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, `--window-size=${width},${height}`, 'about:blank',
   ], { stdio: 'ignore', windowsHide: true });
-  const deadline = Date.now() + 25_000;
+  yieldPriority(child.pid);
+  // a browser that quits at once (its profile in use, a crash) is a failure now, not in 15 s
+  let exited = null;
+  child.once('exit', (code) => { exited = code ?? 'signal'; });
+  child.once('error', (error) => { exited = error.code ?? 'error'; });
+  const deadline = Date.now() + 15_000;
   try {
     let target = null;
-    while (!target && Date.now() < deadline) {
+    while (!target && Date.now() < deadline && exited === null) {
       try {
         const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
         target = list.find((t) => t.type === 'page');
       } catch { /* not up yet */ }
       if (!target) await sleep(200);
     }
-    if (!target) throw new Error('browser did not start');
+    if (!target) throw new Error(exited !== null ? `browser quit at start (${exited})` : 'browser did not start within 15 s');
     const ws = new WebSocket(target.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
     let seq = 0;
@@ -135,6 +173,12 @@ async function capture(url, width, height, onShot) {
     }
     ws.close();
   } finally {
-    try { child.kill(); } catch { /* already gone */ }
+    // the whole tree: renderer and helper processes left behind would hold the profile (and memory);
+    // the next capture starts only once this browser is gone, or it finds the profile locked
+    if (exited === null) {
+      const gone = new Promise((resolve) => child.once('exit', resolve));
+      killTree(child.pid);
+      await Promise.race([gone, sleep(5000)]);
+    }
   }
 }

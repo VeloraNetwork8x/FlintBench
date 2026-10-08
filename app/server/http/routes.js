@@ -8,6 +8,9 @@ import { UI_SCALES } from '../settings/service.js';
 import { resolveProfile } from '../../web/js/lib/profiles.js';
 import { editorCommands } from '../../web/js/lib/editors.js';
 
+// a preview picture this recent is shown as it is, without starting a browser
+const PREVIEW_KEEP_MS = 2 * 60_000;
+
 function list(value, name) {
   if (!Array.isArray(value) || !value.length || value.length > 2000 || !value.every((v) => typeof v === 'string')) {
     throw httpError(400, `${name} must be a non-empty list of strings`);
@@ -241,9 +244,30 @@ export function createRoutes(app) {
     const ports = new Set((project.runtime?.ports ?? []).map(String));
     for (const s of project.runtime?.services ?? []) { try { if (s.url) ports.add(new URL(s.url).port); } catch { /* no url */ } }
     if (!ports.has(u.port || (u.protocol === 'https:' ? '443' : '80'))) throw Object.assign(new Error('That page is not served by this project'), { status: 403, expose: true });
-    const png = await host.preview.screenshot(u.href, { fresh: Boolean(query.get('fresh')) });
-    // the picture that stays: kept with the project, shown (in grey) while its server is offline
+    // the picture kept with the project answers when it is recent (opening a tab starts no browser),
+    // and while previews are paused or a capture failed; only a stopped server says "offline"
     const dir = (await app.storage.project(params.id)).dir;
+    const kept = async (maxAgeMs) => {
+      const meta = await fs.readFile(path.join(dir, 'preview.json'), 'utf8').then(JSON.parse).catch(() => null);
+      if (meta?.url !== u.href || Date.now() - meta.at > maxAgeMs) return null;
+      return fs.readFile(path.join(dir, 'preview.png')).catch(() => null);
+    };
+    // ?kept=1: any picture kept will do (opening the overview); otherwise a recent one
+    const recent = query.get('fresh') ? null : await kept(query.get('kept') ? Infinity : PREVIEW_KEEP_MS);
+    if (recent) {
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+      return res.end(recent);
+    }
+    let png;
+    try {
+      png = await host.preview.screenshot(u.href, { fresh: Boolean(query.get('fresh')) });
+    } catch (error) {
+      const last = error.reason === 'offline' ? null : await kept(Infinity);
+      if (!last) throw error;
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store', 'X-Preview-Stale': '1' });
+      return res.end(last);
+    }
+    // the picture that stays: kept with the project, shown (in grey) while its server is offline
     await fs.writeFile(path.join(dir, 'preview.png'), png).catch(() => {});
     await fs.writeFile(path.join(dir, 'preview.json'), JSON.stringify({ url: u.href, at: Date.now() })).catch(() => {});
     res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
