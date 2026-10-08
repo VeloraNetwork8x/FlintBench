@@ -51,10 +51,10 @@ export function reachable(url, timeout = 1500) {
   });
 }
 
-// Pages often show a loader first: one browser visit takes three pictures, a few seconds apart.
-// The page shows them as they come (each replaces the last); the third is the one that stays.
-export const SHOT_AT_MS = [2000, 5000, 9000];
-const sessions = new Map(); // url -> [deferred × 3] while a visit is under way
+// One picture per visit, a few seconds in: past the loader most pages show first, and one headless
+// browser kept short (several pictures a visit made the machine sluggish).
+export const SHOT_AT_MS = [5000];
+const sessions = new Map(); // url -> [deferred] while a visit is under way
 
 function deferred() {
   let resolve;
@@ -65,14 +65,14 @@ function deferred() {
 }
 
 /**
- * PNG number `step` (1–3) of url rendered at width × height. `fresh` starts a new visit unless one
- * is under way (its pictures are shared); otherwise the last third picture (≤ maxAgeMs old) answers
- * every step. A page that is not served (the dev server stopped) fails fast as `offline` (503)
+ * The PNG of url rendered at width × height (`step` is kept for old callers: there is one picture).
+ * `fresh` starts a new visit unless one is under way (its picture is shared); otherwise the last
+ * picture (≤ maxAgeMs old) answers. A page that is not served (the dev server stopped) fails fast as `offline` (503)
  * without starting a browser; so does one that drops the connection while it loads. Throws when no
  * browser is available or the page fails otherwise.
  */
 export function screenshot(url, { width = 1280, height = 800, maxAgeMs = 20_000, step = 3, fresh = false } = {}) {
-  const i = Math.min(Math.max(Number(step) || 3, 1), SHOT_AT_MS.length) - 1;
+  const i = Math.min(Math.max(Number(step) || 1, 1), SHOT_AT_MS.length) - 1;
   const running = sessions.get(url);
   if (running) return running[i].promise;
   const hit = cache.get(url);

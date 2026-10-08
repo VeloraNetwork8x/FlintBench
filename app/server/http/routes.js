@@ -241,14 +241,11 @@ export function createRoutes(app) {
     const ports = new Set((project.runtime?.ports ?? []).map(String));
     for (const s of project.runtime?.services ?? []) { try { if (s.url) ports.add(new URL(s.url).port); } catch { /* no url */ } }
     if (!ports.has(u.port || (u.protocol === 'https:' ? '443' : '80'))) throw Object.assign(new Error('That page is not served by this project'), { status: 403, expose: true });
-    const step = Number(query.get('step')) || 3;
-    const png = await host.preview.screenshot(u.href, { step, fresh: Boolean(query.get('fresh')) });
-    if (step >= 3) {
-      // the picture that stays: kept with the project, shown (in grey) while its server is offline
-      const dir = (await app.storage.project(params.id)).dir;
-      await fs.writeFile(path.join(dir, 'preview.png'), png).catch(() => {});
-      await fs.writeFile(path.join(dir, 'preview.json'), JSON.stringify({ url: u.href, at: Date.now() })).catch(() => {});
-    }
+    const png = await host.preview.screenshot(u.href, { fresh: Boolean(query.get('fresh')) });
+    // the picture that stays: kept with the project, shown (in grey) while its server is offline
+    const dir = (await app.storage.project(params.id)).dir;
+    await fs.writeFile(path.join(dir, 'preview.png'), png).catch(() => {});
+    await fs.writeFile(path.join(dir, 'preview.json'), JSON.stringify({ url: u.href, at: Date.now() })).catch(() => {});
     res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
     res.end(png);
   });

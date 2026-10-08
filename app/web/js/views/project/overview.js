@@ -20,6 +20,9 @@ import { relocationText, relocationActions } from '../../lib/relocation.js';
  *   3. the work itself (changes, recent activity) next to what is running (services, agent, notes).
  * Every block links to the section that manages it; nothing is shown twice.
  */
+// the preview takes a fresh picture this often while it is on screen: each one starts a headless
+// browser, so not too often
+const PREVIEW_REFRESH_MS = 2 * 60_000;
 const NOTE_TYPES = [['note', 'Note'], ['decision', 'Decision'], ['goal', 'Goal'], ['constraint', 'Constraint'], ['state', 'State']];
 const NOTE_LABEL = Object.fromEntries(NOTE_TYPES);
 const NOTE_HINTS = {
@@ -309,7 +312,7 @@ export function render(ctx) {
   function buildPreview(p, target, targets) {
     previewUrl = target?.url ?? null;
     const label = target?.label ?? 'The dev server';
-    const src = (step, fresh) => projectUrl(ctx.projectId, `/preview?url=${encodeURIComponent(target.url)}&step=${step}${fresh ? `&fresh=${Date.now()}` : ''}`);
+    const src = (fresh) => projectUrl(ctx.projectId, `/preview?url=${encodeURIComponent(target.url)}${fresh ? `&fresh=${Date.now()}` : ''}`);
     const state = h('div.preview-state', 'Capturing the page…');
     const img = h('img.preview-img', { alt: `Preview of ${label}`, title: target ? `Open ${target.label}` : '' });
     const box = h(`${target ? 'a' : 'div'}.preview-box.is-loading`, target ? { href: target.url, target: '_blank', rel: 'noopener noreferrer' } : {}, img, state);
@@ -347,26 +350,21 @@ export function render(ctx) {
         show(await res.blob());
         say();
       },
-      /**
-       * A visit takes three pictures a few seconds apart: shown one after another when asked
-       * (a loader is replaced by the page), only the last one on the quiet 30 s refresh.
-       */
-      async reload(fresh, { steps = [1, 2, 3] } = {}) {
+      /** One picture of the page (the server takes it a few seconds in, past the usual loader). */
+      async reload(fresh) {
         if (loading || !target) return;
         loading = true;
         if (!img.getAttribute('src') || current.offline) box.classList.add('is-loading');
         state.textContent = 'Capturing the page…';
         try {
-          for (const [i, step] of steps.entries()) {
-            // fetched rather than set as <img src>: a stopped server answers 503 "offline", not a broken image
-            const res = await fetch(src(step, fresh && i === 0), { credentials: 'same-origin' });
-            if (res.status === 503) { await current.setOffline(); return; }
-            if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? `HTTP ${res.status}`);
-            current.offline = false;
-            lastAt = Date.now();
-            box.classList.remove('is-offline');
-            show(await res.blob());
-          }
+          // fetched rather than set as <img src>: a stopped server answers 503 "offline", not a broken image
+          const res = await fetch(src(fresh), { credentials: 'same-origin' });
+          if (res.status === 503) { await current.setOffline(); return; }
+          if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? `HTTP ${res.status}`);
+          current.offline = false;
+          lastAt = Date.now();
+          box.classList.remove('is-offline');
+          show(await res.blob());
         } catch {
           box.classList.remove('is-loading');
           box.classList.add('is-error');
@@ -378,14 +376,14 @@ export function render(ctx) {
       start() {
         current.reload(true);
         clearInterval(previewTimer);
-        previewTimer = setInterval(() => { if (document.visibilityState === 'visible' && !current.offline) current.reload(true, { steps: [3] }); }, 30_000);
+        previewTimer = setInterval(() => { if (document.visibilityState === 'visible' && !current.offline) current.reload(true); }, PREVIEW_REFRESH_MS);
       },
     };
     preview = current;
     if (target) {
       current.reload(false);
       clearInterval(previewTimer);
-      previewTimer = setInterval(() => { if (document.visibilityState === 'visible' && !current.offline) current.reload(true, { steps: [3] }); }, 30_000);
+      previewTimer = setInterval(() => { if (document.visibilityState === 'visible' && !current.offline) current.reload(true); }, PREVIEW_REFRESH_MS);
     } else {
       current.setOffline();
     }
