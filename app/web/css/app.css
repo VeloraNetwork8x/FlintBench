@@ -1862,6 +1862,55 @@ dialog.modal.is-gh-repo { width: min(780px, calc(100% - 32px)); }
 .gh-item-n { flex: none; color: var(--text-3); font: var(--fs-sm) var(--font-mono); }
 .gh-item-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gh-item .faint.small { flex: none; }
+/* stars beside the name: visible on every row, at every width */
+.gh-stars { display: inline-flex; flex: none; align-items: center; gap: 3px; color: var(--text-2); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.gh-stars svg { color: var(--warn); }
+.gh-unread { display: inline-flex; flex: none; align-items: center; gap: 3px; padding: 0 6px; border-radius: 999px; background: var(--accent-dim); color: var(--accent); font-size: var(--fs-xs); font-weight: 600; font-variant-numeric: tabular-nums; }
+.gh-inbox-btn { color: var(--accent); }
+.rail-link .badge.is-info { background: var(--accent); color: var(--inverse); }
+.gh-tab-n.is-new { background: var(--accent-dim); color: var(--accent); }
+/* repository overview: numbers, languages, facts */
+.gh-overview { display: grid; gap: 16px; }
+.gh-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 8px; }
+.gh-stat { display: grid; gap: 1px; align-content: start; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); color: var(--text); font: inherit; text-align: left; }
+.gh-stat.is-link { cursor: pointer; transition: border-color var(--t-quick) var(--ease), background-color var(--t-quick) var(--ease); }
+.gh-stat.is-link:hover { border-color: var(--accent); background: var(--hover); }
+.gh-stat.is-link:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent-dim), 0 0 0 1px var(--accent); }
+.gh-stat-n { font-size: var(--fs-lg); font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.25; }
+.gh-stat-l { color: var(--text-2); font-size: var(--fs-sm); }
+.gh-stat-note { color: var(--text-3); font-size: var(--fs-xs); }
+.gh-langs { display: grid; gap: 8px; }
+.gh-langbar { display: flex; height: 8px; overflow: hidden; border-radius: 999px; background: var(--hover); gap: 2px; }
+.gh-langbar > span { display: block; min-width: 3px; }
+.gh-lang-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--text-2); font-size: var(--fs-sm); }
+.gh-lang-legend .faint { margin-left: 2px; font-variant-numeric: tabular-nums; }
+.gh-facts { font-size: var(--fs-sm); }
+.gh-facts dd { overflow-wrap: anywhere; }
+.gh-topics { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.gh-more { display: inline-flex; align-items: center; gap: 6px; margin: 6px 8px; color: var(--text-3); font-size: var(--fs-sm); text-decoration: none; }
+.gh-more:hover { color: var(--accent); }
+/* a repository row opened in place: the small overview under it */
+.gh-entry { border-top: 1px solid var(--line); }
+.gh-entry:first-child { border-top: 0; }
+.gh-entry > .gh-row { border-top: 0; }
+.gh-row .prow-go svg { transition: transform var(--t-quick) var(--ease); }
+.gh-entry.is-open > .gh-row { background: var(--hover); }
+.gh-entry.is-open > .gh-row .prow-go svg { transform: rotate(90deg); }
+.gh-x { display: grid; gap: 12px; padding: 4px 16px 14px; background: var(--hover); animation: gh-x-in var(--t-quick) var(--ease); }
+@keyframes gh-x-in { from { opacity: 0; transform: translateY(-4px); } }
+@media (prefers-reduced-motion: reduce) { .gh-x { animation: none; } }
+.gh-x-stats { display: flex; flex-wrap: wrap; gap: 6px; }
+.gh-x-stat { display: inline-flex; align-items: baseline; gap: 5px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--text-2); font-size: var(--fs-sm); }
+.gh-x-stat strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.gh-x-facts { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--text-2); font-size: var(--fs-sm); }
+.gh-x-facts a { color: var(--accent); text-decoration: none; }
+.gh-x-actions { gap: 6px; }
+.gh-x-actions .faint.small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.gh-x-wait { margin: 0; }
+.gh-x-notes { padding: 0; }
+.gh-note { display: flex; align-items: center; gap: 4px; }
+.gh-note > .gh-item { flex: 1; min-width: 0; }
+.gh-notes-head { padding: 0 8px 6px; }
 @media (max-width: 1100px) {
   .gh-row { grid-template-columns: minmax(200px, 2fr) minmax(160px, 1.2fr) 150px; }
   .gh-meta, .gh-time { display: none; }

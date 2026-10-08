@@ -1,10 +1,10 @@
 import { dockerLogo } from '../lib/agent-icons.js';
 import { h, icon, brandMark, replace } from '../lib/dom.js';
-import { store, subscribe, prefs } from '../lib/store.js';
+import { store, subscribe, prefs, notify } from '../lib/store.js';
 import { current, navigate, onRoute, projectPath } from '../lib/router.js';
 import { reportActivity, onServerEvent } from '../lib/ws.js';
 import { play } from '../lib/sound.js';
-import { agentFinishedToast, commitToast, pushToast, serviceStartedToast } from '../lib/notify.js';
+import { agentFinishedToast, commitToast, githubNotificationToast, githubRepoToast, pushToast, serviceStartedToast } from '../lib/notify.js';
 import { ledClock } from '../lib/led-clock.js';
 import { timer, formatDuration } from '../lib/timer.js';
 import { openPalette, toast } from '../lib/ui.js';
@@ -118,6 +118,11 @@ export function mountShell(root, actions) {
     const homeLink = links[0];
     homeLink.querySelector('.badge')?.remove();
     if (attention) homeLink.append(h('span.badge', { 'aria-label': `${attention} need attention` }, String(attention)));
+    // unread GitHub notifications on the GitHub entry
+    const githubLink = links[NAV.findIndex((n) => n.name === 'github')];
+    const unread = store.state.githubUnread;
+    githubLink?.querySelector('.badge')?.remove();
+    if (githubLink && unread) githubLink.append(h('span.badge.is-info', { 'aria-label': `${unread} unread GitHub notifications` }, unread > 99 ? '99+' : String(unread)));
   }
 
   // the timer in the status bar too: inside a project the clock is hidden, the countdown is not
@@ -232,6 +237,13 @@ export function mountShell(root, actions) {
         timeout: 15_000,
         onClick: () => navigate(projectPath(msg.e.projectId)),
       });
+    } else if (msg.e?.type === 'github.inbox') {
+      store.state.githubUnread = msg.e.data?.unread ?? 0;
+      notify('github');
+      renderBadges();
+    } else if (msg.e?.type === 'github.repo_changed' || msg.e?.type === 'github.notification') {
+      // stars, forks and the GitHub inbox: unless notifications are quiet, or the GitHub section is off
+      if (level() !== 'quiet' && has('nav.github')) (msg.e.type === 'github.repo_changed' ? githubRepoToast : githubNotificationToast)(msg.e.data ?? {});
     } else if (msg.e?.type === 'agent.turn_completed') {
       const p = store.project(msg.e.projectId);
       if (p && level() !== 'quiet' && agentsInUse()) agentFinishedToast(msg.e.data, p);

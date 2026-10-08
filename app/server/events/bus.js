@@ -27,6 +27,9 @@ export const EVENT_POLICY = {
   'agent.turn_completed': { persist: false }, // a notification: an agent finished a task
   'agent.moved': { persist: true }, // a conversation moved between a FlintBench tab and a terminal window
   'work.updated': { persist: true },
+  'github.repo_changed': { persist: false }, // a notification: new stars or forks on one of the owner's repositories
+  'github.notification': { persist: false }, // a notification: something new in the GitHub inbox
+  'github.inbox': { persist: false }, // how many GitHub notifications are unread (sidebar badge)
 };
 
 /**

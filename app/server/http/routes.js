@@ -62,6 +62,7 @@ export function createRoutes(app) {
     integrations: await app.integrations(),
     terminals: host.pty.list(),
     platform: host.platform,
+    githubUnread: github.unread,
     terminalFont: await host.terminalFont(),
     dataDir: app.config.dataDir,
     lastScanAt: projects.lastScanAt ?? null,
@@ -178,6 +179,9 @@ export function createRoutes(app) {
   r.delete('/api/github/repos/:owner/:name', ({ params, body }) => github.remove(params.owner, params.name, body?.confirm));
   r.post('/api/github/repos/:owner/:name/clone', ({ params, body }) => github.clone(params.owner, params.name, body?.parent));
   r.post('/api/github/terminal', ({ body }) => github.openTerminal(body?.action));
+  r.get('/api/github/notifications', ({ query }) => github.notifications({ refresh: query.get('refresh') === '1' }));
+  r.post('/api/github/notifications/:thread/read', ({ params }) => github.markRead(params.thread));
+  r.post('/api/github/repos/:owner/:name/notifications/read', ({ params }) => github.markRepoRead(params.owner, params.name));
 
   /* ---------- runtime / services ---------- */
   r.get('/api/projects/:id/services', async ({ params }) => ({

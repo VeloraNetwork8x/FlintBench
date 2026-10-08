@@ -60,6 +60,49 @@ export function pushToast({ upstream, count, published, subject }, project) {
   });
 }
 
+/** Why GitHub notified the account, in words (the API's `reason`). */
+export const GITHUB_REASONS = {
+  approval_requested: 'Approval requested', assign: 'Assigned to you', author: 'On your thread', ci_activity: 'Workflow run',
+  comment: 'New comment', invitation: 'Invitation', manual: 'Subscribed', member_feature_requested: 'Feature request',
+  mention: 'You were mentioned', review_requested: 'Review requested', security_advisory_credit: 'Security credit',
+  security_alert: 'Security alert', state_change: 'State changed', subscribed: 'Watching', team_mention: 'Team mentioned',
+};
+
+/** What a notification is about, in words (the API's subject `type`). */
+export const GITHUB_TYPES = { PullRequest: 'Pull request', Issue: 'Issue', Release: 'Release', Commit: 'Commit', CheckSuite: 'Checks', WorkflowRun: 'Workflow', Discussion: 'Discussion', RepositoryVulnerabilityAlert: 'Security alert' };
+
+/** "New star · FlintBench": stars or forks on one of your repositories; click for the GitHub section. */
+export function githubRepoToast({ name, stars, forks }) {
+  const gained = [
+    stars.to > stars.from ? `${plural(stars.to - stars.from, 'new star')} · ${plural(stars.to, 'star')} in all` : null,
+    forks.to > forks.from ? `${plural(forks.to - forks.from, 'new fork')} · ${plural(forks.to, 'fork')} in all` : null,
+  ].filter(Boolean);
+  toast(gained[0], {
+    kind: 'ok',
+    detail: gained[1],
+    title: `${stars.to > stars.from ? 'Starred' : 'Forked'} · ${name}`,
+    iconNode: icon(stars.to > stars.from ? 'star' : 'github', 18),
+    timeout: 9000,
+    onClick: () => navigate('/github'),
+  });
+}
+
+/** Something new in the GitHub inbox: one notification (click opens it on GitHub), or how many. */
+export function githubNotificationToast({ count, repo, repos, title, type, reason, url }) {
+  if (count > 1) {
+    toast(`${count} new notifications on GitHub`, { kind: 'info', title: 'GitHub', detail: (repos ?? []).join(', ') || undefined, iconNode: icon('bell', 18), timeout: 9000, onClick: () => navigate('/github') });
+    return;
+  }
+  toast(title || 'New notification', {
+    kind: 'info',
+    title: `${GITHUB_TYPES[type] ?? 'GitHub'} · ${repo}`,
+    detail: GITHUB_REASONS[reason] ?? undefined,
+    iconNode: hostLogo('https://github.com/', 18) || icon('github', 18),
+    timeout: 10_000,
+    onClick: () => window.open(url, '_blank', 'noopener'),
+  });
+}
+
 /** Every kind of notification once, a moment apart, so they can be seen and heard. */
 export function showSampleNotifications() {
   const projects = [...store.state.projects.values()].sort((a, b) => (b.activity?.lastActivityAt ?? 0) - (a.activity?.lastActivityAt ?? 0));
@@ -74,6 +117,8 @@ export function showSampleNotifications() {
     () => pushToast({ upstream: 'origin/main', count: 2, subject: 'Sample: the last commit that was pushed' }, { ...project, git: { ...project.git, webUrl: project.git?.webUrl || 'https://github.com/' } }),
     () => agentFinishedToast({ agent: 'claude', agentName: 'Claude Code', summary: 'Sample: the first lines of the agent’s last reply appear here — e.g. “Added the year selector to Activity and verified it.”' }, project),
     () => agentFinishedToast({ agent: 'codex', agentName: 'Codex', summary: 'Sample: Codex finished its task in this project.' }, project),
+    () => githubRepoToast({ name: 'your-repository', stars: { from: 11, to: 12 }, forks: { from: 2, to: 2 } }),
+    () => githubNotificationToast({ count: 1, repo: 'you/your-repository', title: 'Sample: Add dark mode to the settings page', type: 'PullRequest', reason: 'review_requested', url: 'https://github.com/notifications' }),
   ];
   samples.forEach((show, i) => setTimeout(show, i * 700));
 }

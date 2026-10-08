@@ -55,7 +55,7 @@ export async function startFlintBench(config = loadConfig(), log = console) {
 
   const projects = new ProjectService({ storage, host, bus, settings, dataDir: config.dataDir, log });
   const git = new GitService({ projects, host, bus, log });
-  const github = new GitHubService({ host, projects, git, log });
+  const github = new GitHubService({ host, projects, git, bus, dataDir: config.dataDir, log });
   const terminals = new TerminalService({ host, projects, settings, storage, log });
   const docker = new DockerService({ projects, host, bus, settings, log });
   const runtime = new RuntimeService({ projects, host, terminals, storage, bus, docker, log });
@@ -116,6 +116,7 @@ export async function startFlintBench(config = loadConfig(), log = console) {
   await agents.init();
   insights.init();
   history.init();
+  await github.init();
 
   const router = createRoutes(app);
   const server = createHttpServer({ router, auth, webDir: config.webDir, port: config.port, log });
@@ -178,7 +179,7 @@ export async function startFlintBench(config = loadConfig(), log = console) {
     aggregator.stop();
     hub.close();
     server.close();
-    for (const svc of [projects, git, docker, runtime, agents, insights, history, auth]) svc.stop?.();
+    for (const svc of [projects, git, github, docker, runtime, agents, insights, history, auth]) svc.stop?.();
     host.pty.disposeAll();
     await new Promise((r) => setTimeout(r, 200));
     await storage.runtime.releaseInstanceLock();

@@ -12,6 +12,7 @@ const state = {
   platform: '',
   dataDir: '',
   terminalFont: null, // { families, source } read from the owner's own terminal
+  githubUnread: 0, // unread notifications in the GitHub inbox (sidebar badge)
   connected: false,
   lastEvent: null,
   lastScanAt: null,
@@ -63,6 +64,7 @@ export const store = {
     state.platform = b.platform;
     state.dataDir = b.dataDir;
     state.terminalFont = b.terminalFont ?? null;
+    state.githubUnread = b.githubUnread ?? 0;
     state.lastScanAt = b.lastScanAt;
     state.rootSuggestions = b.rootSuggestions ?? [];
     ['projects', 'candidates', 'agents', 'settings', 'terminals', 'integrations'].forEach(notify);

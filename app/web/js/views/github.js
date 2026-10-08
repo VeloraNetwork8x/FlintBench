@@ -2,8 +2,9 @@ import { h, icon, replace, actionButton } from '../lib/dom.js';
 import { store, subscribe } from '../lib/store.js';
 import { api, projectUrl } from '../lib/api.js';
 import { navigate, projectPath } from '../lib/router.js';
-import { ago, plural } from '../lib/format.js';
+import { ago, bytes, plural, when } from '../lib/format.js';
 import { attempt, confirmDialog, dialog, gitLine, toast } from '../lib/ui.js';
+import { GITHUB_REASONS, GITHUB_TYPES } from '../lib/notify.js';
 import { contextMenu, copyText, openMenu } from '../lib/menu.js';
 import { editorItems } from '../lib/editor-menu.js';
 import { selectField } from '../lib/select-menu.js';
@@ -152,11 +153,62 @@ async function deleteRepo(repo) {
   }
 }
 
-/** Everything about one repository: what is open on it, and what can be done with it. */
+const num = (v) => (v === null || v === undefined ? '—' : Number(v).toLocaleString());
+
+/** The languages bar (GitHub's colours) with its legend: name and share of the code. */
+function languages(list) {
+  const pct = (l) => `${(l.share * 100).toFixed(1)}%`;
+  const colour = (l) => l.color ?? LANG[l.name] ?? 'var(--text-3)';
+  return h('div.gh-langs',
+    h('div.gh-langbar', { role: 'img', 'aria-label': list.map((l) => `${l.name} ${pct(l)}`).join(', ') },
+      list.map((l) => h('span', { style: { width: `${Math.max(l.share * 100, 0.6)}%`, background: colour(l) }, title: `${l.name} ${pct(l)}` }))),
+    h('div.gh-lang-legend', list.map((l) => h('span.gh-lang', h('span.gh-lang-dot', { style: { background: colour(l) } }), l.name, h('span.faint', pct(l))))));
+}
+
+/** One GitHub notification: what, where, why; opens it on GitHub, with Mark as read beside it. */
+function notificationItem(t, { onRead, showRepo = false }) {
+  const a = h('a.gh-item', { href: t.url, target: '_blank', rel: 'noopener' },
+    icon('bell', 13),
+    h('span.gh-item-t', t.title),
+    h('span.chip', GITHUB_TYPES[t.type] ?? t.type),
+    h('span.faint.small', `${showRepo ? `${t.repo} · ` : ''}${GITHUB_REASONS[t.reason] ?? t.reason} · ${ago(Date.parse(t.updated_at))}`));
+  const read = actionButton('', async () => {
+    const r = await attempt(() => api.post(`/api/github/notifications/${encodeURIComponent(t.id)}/read`), { failure: 'Could not mark it as read' });
+    if (r) onRead(t);
+  }, { cls: 'btn sm icon ghost', iconName: 'check', title: 'Mark as read' });
+  contextMenu(a, () => [
+    { label: 'Open on GitHub', icon: 'external', run: () => window.open(t.url, '_blank', 'noopener') },
+    { label: 'Mark as read', icon: 'check', run: () => read.click() },
+  ], { label: 'Notification actions' });
+  return h('div.gh-note', a, read);
+}
+
+/** The account's unread GitHub notifications, every repository. */
+function inboxDialog(threads, { onRead }) {
+  let list = threads;
+  return dialog((done) => {
+    const body = h('div.gh-d-body');
+    const draw = () => replace(body, list.length
+      ? h('div.gh-items', list.map((t) => notificationItem(t, { showRepo: true, onRead: (x) => { list = list.filter((y) => y.id !== x.id); onRead(x); draw(); } })))
+      : h('p.panel-empty', 'No unread notifications.'));
+    draw();
+    return h('div.gh-detail',
+      h('div.gh-d-head', h('div.gh-d-title', h('h2', 'GitHub notifications')), h('p.dim', 'Unread notifications of your account: mentions, review requests, replies, workflow runs.')),
+      body,
+      h('div.actions',
+        h('a.btn', { href: 'https://github.com/notifications', target: '_blank', rel: 'noopener' }, icon('external', 13), 'Open on GitHub'),
+        h('button.btn', { type: 'button', onclick: () => done(null) }, 'Close')));
+  }, { cls: 'is-gh-repo' });
+}
+
+/**
+ * Everything about one repository: its numbers (commits, branches, stars…), what is open on it,
+ * and what can be done with it. Opens on the overview; a FlintBench project is one click away.
+ */
 function repoDialog(start, { onChanged }) {
   let repo = start;
   let detail = null;
-  let tab = 'pulls';
+  let tab = 'overview';
   return dialog((done) => {
     const head = h('div.gh-d-head');
     const tabs = h('div.gh-tabs', { role: 'tablist' });
@@ -178,15 +230,74 @@ function repoDialog(start, { onChanged }) {
           h('span.faint.small', `Pushed ${ago(Date.parse(repo.pushed_at))}`)));
     }
 
+    // the real totals (GitHub's counts) when known; the lists below show the most recent ones
+    const total = (k) => {
+      if (!detail) return null;
+      const s = detail.stats;
+      return { pulls: s?.openPulls, issues: s?.openIssues, commits: s?.commits, branches: s?.branches }[k] ?? detail[k]?.length ?? null;
+    };
+    const show = (k) => { tab = k; drawTabs(); drawBody(); };
+
     function drawTabs() {
-      const count = (k) => (detail ? detail[k].length : null);
-      const tabsDef = [['pulls', 'Pull requests'], ['issues', 'Issues'], ['commits', 'Commits'], ['branches', 'Branches']];
-      replace(tabs, tabsDef.map(([k, label]) => h('button.gh-tab', { type: 'button', role: 'tab', 'aria-selected': String(tab === k), onclick: () => { tab = k; drawTabs(); drawBody(); } },
-        label, count(k) !== null ? h('span.gh-tab-n', String(count(k))) : null)));
+      const tabsDef = [['overview', 'Overview'], ['pulls', 'Pull requests'], ['issues', 'Issues'], ['commits', 'Commits'], ['branches', 'Branches']];
+      if (detail?.notifications?.length) tabsDef.push(['notifications', 'Notifications']);
+      replace(tabs, tabsDef.map(([k, label]) => h('button.gh-tab', { type: 'button', role: 'tab', 'aria-selected': String(tab === k), onclick: () => show(k) },
+        k === 'notifications' ? icon('bell', 12) : null,
+        label, k !== 'overview' && total(k) !== null ? h(`span.gh-tab-n${k === 'notifications' ? '.is-new' : ''}`, num(total(k))) : null)));
+    }
+
+    function overview() {
+      const s = detail.stats;
+      if (!s) return h('p.panel-empty', 'GitHub did not give this repository’s numbers. The tabs still list what is open on it.');
+      const tile = (label, value, note, target) => h(target ? 'button.gh-stat.is-link' : 'div.gh-stat', target ? { type: 'button', onclick: () => show(target), title: `Show ${label.toLowerCase()}` } : {},
+        h('span.gh-stat-n', num(value)), h('span.gh-stat-l', label), note ? h('span.gh-stat-note', note) : null);
+      const p = projectOf(repo);
+      const facts = [
+        ['Default branch', s.defaultBranch ? h('code', s.defaultBranch) : '—'],
+        ['Last commit', s.lastCommitAt ? `${when(Date.parse(s.lastCommitAt))} · ${ago(Date.parse(s.lastCommitAt))}` : '—'],
+        ['Last push', repo.pushed_at ? `${when(Date.parse(repo.pushed_at))} · ${ago(Date.parse(repo.pushed_at))}` : '—'],
+        ['Created', s.createdAt ? when(Date.parse(s.createdAt)) : '—'],
+        ['Latest release', s.latestRelease ? h('a', { href: s.latestRelease.url, target: '_blank', rel: 'noopener' }, s.latestRelease.name, s.latestRelease.at ? h('span.faint', ` · ${ago(Date.parse(s.latestRelease.at))}`) : null) : 'None yet'],
+        ['License', s.license ?? 'None'],
+        ['Size on GitHub', s.sizeKb !== null ? bytes(s.sizeKb * 1024) : '—'],
+        repo.homepage ? ['Website', h('a', { href: repo.homepage, target: '_blank', rel: 'noopener' }, repo.homepage)] : null,
+        ['On this PC', p ? h('span', h('span.chip.accent', 'In FlintBench'), ' ', h('span.mono.small', p.path)) : 'Not cloned'],
+        s.topics.length ? ['Topics', h('span.gh-topics', s.topics.map((t) => h('span.chip', t)))] : null,
+      ].filter(Boolean);
+      return h('div.gh-overview',
+        h('div.gh-stats',
+          tile('Commits', s.commits, s.defaultBranch ? `on ${s.defaultBranch}` : null, 'commits'),
+          tile('Branches', s.branches, null, 'branches'),
+          tile('Stars', s.stars),
+          tile('Forks', s.forks),
+          tile('Watchers', s.watchers),
+          tile('Contributors', s.contributors),
+          tile('Open issues', s.openIssues, `${num(s.closedIssues)} closed`, 'issues'),
+          tile('Open pull requests', s.openPulls, `${num(s.mergedPulls)} merged`, 'pulls'),
+          tile('Releases', s.releases, s.tags ? plural(s.tags, 'tag') : null)),
+        s.languages.length ? languages(s.languages) : null,
+        h('dl.kv.gh-facts', facts.flatMap(([k, v]) => [h('dt', k), h('dd', v)])));
     }
 
     function drawBody() {
       if (!detail) return;
+      if (tab === 'overview') {
+        replace(body, overview());
+        return;
+      }
+      if (tab === 'notifications') {
+        const markAll = actionButton('Mark all as read', async () => {
+          const r = await attempt(() => api.post(repoUrl(repo, '/notifications/read')), { failure: 'Could not mark them as read' });
+          if (r) { detail.notifications = []; show('overview'); }
+        }, { cls: 'btn sm', iconName: 'check' });
+        replace(body, h('div.gh-items',
+          h('div.row.gh-notes-head', h('span.faint.small', plural(detail.notifications.length, 'unread notification')), h('span.spacer'), markAll),
+          detail.notifications.map((t) => notificationItem(t, { onRead: (x) => {
+            detail.notifications = detail.notifications.filter((y) => y.id !== x.id);
+            if (detail.notifications.length) { drawTabs(); drawBody(); } else show('overview');
+          } }))));
+        return;
+      }
       // each item opens on GitHub; right click: open, copy its link (and its number, hash or name)
       const link = (url, copy, ...parts) => {
         const a = h('a.gh-item', { href: url, target: '_blank', rel: 'noopener' }, ...parts);
@@ -207,7 +318,11 @@ function repoDialog(start, { onChanged }) {
           b.name === repo.default_branch ? h('span.chip.accent', 'default') : null, b.protected ? h('span.chip', 'protected') : null)),
       }[tab]();
       const empty = { pulls: 'No open pull requests.', issues: 'No open issues.', commits: 'No commits yet.', branches: 'No branches yet.' }[tab];
-      replace(body, list.length ? h('div.gh-items', list) : h('p.panel-empty', empty));
+      // a long list is cut to the most recent: say so, and where the rest is
+      const all = total(tab);
+      const page = { pulls: 'pulls', issues: 'issues', commits: `commits/${encodeURIComponent(repo.default_branch ?? '')}`, branches: 'branches' }[tab];
+      const more = all > list.length ? h('a.gh-more', { href: `${repo.html_url}/${page}`, target: '_blank', rel: 'noopener' }, `Showing the latest ${list.length} of ${num(all)} · see all on GitHub`, icon('external', 12)) : null;
+      replace(body, list.length ? h('div.gh-items', list, more) : h('p.panel-empty', empty));
     }
 
     drawHead();
@@ -244,7 +359,7 @@ function repoMenuItems(repo, { onChanged, onDeleted, onDetails }) {
   ] : [{ label: 'Clone to this PC…', icon: 'download', run: () => cloneRepo(repo) }];
   return [
     ...local,
-    onDetails ? { label: 'Details', icon: 'eye', run: onDetails } : null,
+    onDetails ? { label: 'Pull requests, issues, commits…', icon: 'eye', run: onDetails } : null,
     { label: 'Open on GitHub', icon: 'external', run: () => window.open(repo.html_url, '_blank', 'noopener') },
     '-',
     { label: 'Copy clone URL', icon: 'file', run: () => copyText(repo.clone_url, toast) },
@@ -274,6 +389,7 @@ export function mount(container) {
   let repos = null;
   let fetchedAt = 0;
   let loadError = null;
+  let inbox = []; // unread GitHub notifications of the account
   const search = h('input.input', { type: 'search', placeholder: 'Filter repositories', 'aria-label': 'Filter repositories', 'data-search': true });
   const show = selectField({ label: 'Show', value: 'all', options: SHOW, size: 'sm' });
   const sort = selectField({ label: 'Sort', value: 'pushed', options: SORT, size: 'sm' });
@@ -291,7 +407,7 @@ export function mount(container) {
     if (!status || refresh) status = await api.get('/api/github/status').catch((e) => ({ error: e.message }));
     if (status?.authenticated) {
       try {
-        const r = await api.get(`/api/github/repos${refresh ? '?refresh=1' : ''}`);
+        const [r] = await Promise.all([api.get(`/api/github/repos${refresh ? '?refresh=1' : ''}`), loadInbox({ refresh })]);
         repos = r.repos;
         fetchedAt = r.fetchedAt;
       } catch (e) {
@@ -300,6 +416,12 @@ export function mount(container) {
     }
     draw();
   }
+
+  async function loadInbox({ refresh = false } = {}) {
+    inbox = await api.get(`/api/github/notifications${refresh ? '?refresh=1' : ''}`).then((r) => r.threads, () => inbox);
+  }
+
+  const unreadOf = (repo) => inbox.filter((t) => t.repo.toLowerCase() === repo.full_name.toLowerCase()).length;
 
   const reload = () => load({ refresh: true });
 
@@ -348,6 +470,8 @@ export function mount(container) {
     const me = status.user?.login;
     replace(headSub, me ? `Signed in as @${me} through GitHub CLI${repos ? ` · ${plural(repos.length, 'repository', 'repositories')}` : ''}` : 'Signed in through GitHub CLI');
     replace(headActions,
+      actionButton(inbox.length ? `${inbox.length} unread` : 'Notifications', () => inboxDialog(inbox, { onRead: (t) => { inbox = inbox.filter((x) => x.id !== t.id); draw(); } }),
+        { cls: `btn${inbox.length ? ' gh-inbox-btn' : ''}`, iconName: 'bell', title: 'Your unread GitHub notifications' }),
       actionButton('Refresh', reload, { cls: 'btn', iconName: 'refresh', title: fetchedAt ? `Read ${ago(fetchedAt)}` : undefined }),
       actionButton('New repository', async () => {
         const r = await newRepoDialog();
@@ -390,26 +514,90 @@ export function mount(container) {
     replace(wrap, list.length ? h('div.gh-list', { role: 'list' }, list.map(row)) : h('p.panel-empty', 'No repository matches.'));
   }
 
+  // rows opened in place (by full name), and what GitHub said about each: { detail } | { error }
+  const expanded = new Set();
+  const details = new Map();
+
+  /** The small overview under an open row: the numbers, the languages, a few facts, where to go next. */
+  function fillPanel(panel, repo) {
+    const p = projectOf(repo);
+    const got = details.get(repo.full_name);
+    const actions = h('div.row.wrap.gh-x-actions',
+      p ? actionButton('Open Git tab', () => navigate(projectPath(p.id, 'git')), { cls: 'btn primary sm', iconName: 'branch', title: `${p.name} in FlintBench` })
+        : actionButton('Clone to this PC', () => cloneRepo(repo), { cls: 'btn primary sm', iconName: 'download' }),
+      h('a.btn.sm', { href: repo.html_url, target: '_blank', rel: 'noopener' }, icon('external', 13), 'Open on GitHub'),
+      h('span.spacer'),
+      p ? h('span.faint.small.mono', { title: p.path }, p.path) : null);
+    if (!got) return replace(panel, h('p.faint.small.gh-x-wait', 'Reading from GitHub…'), actions);
+    if (got.error) return replace(panel, h('p.faint.small', `Could not read the repository: ${got.error}`), actions);
+    const s = got.detail.stats;
+    const stat = (value, label) => h('span.gh-x-stat', h('strong', num(value)), label);
+    const notes = got.detail.notifications ?? [];
+    replace(panel,
+      s ? h('div.gh-x-stats',
+        stat(s.commits, s.commits === 1 ? 'commit' : 'commits'),
+        stat(s.branches, s.branches === 1 ? 'branch' : 'branches'),
+        stat(s.stars, s.stars === 1 ? 'star' : 'stars'),
+        stat(s.forks, s.forks === 1 ? 'fork' : 'forks'),
+        stat(s.watchers, s.watchers === 1 ? 'watcher' : 'watchers'),
+        stat(s.contributors, s.contributors === 1 ? 'contributor' : 'contributors'),
+        stat(s.openIssues, s.openIssues === 1 ? 'open issue' : 'open issues'),
+        stat(s.openPulls, s.openPulls === 1 ? 'open pull request' : 'open pull requests'),
+        stat(s.releases, s.releases === 1 ? 'release' : 'releases')) : null,
+      s?.languages.length ? languages(s.languages) : null,
+      s ? h('div.gh-x-facts',
+        s.defaultBranch ? h('span', 'Branch ', h('code', s.defaultBranch)) : null,
+        s.lastCommitAt ? h('span', `Last commit ${ago(Date.parse(s.lastCommitAt))}`) : null,
+        h('span', `Created ${when(Date.parse(s.createdAt))}`),
+        h('span', s.license ? `License ${s.license}` : 'No license'),
+        s.latestRelease ? h('a', { href: s.latestRelease.url, target: '_blank', rel: 'noopener' }, `Release ${s.latestRelease.name}`) : null) : null,
+      notes.length ? h('div.gh-items.gh-x-notes', notes.slice(0, 3).map((t) => notificationItem(t, { onRead: (x) => {
+        got.detail.notifications = notes.filter((y) => y.id !== x.id);
+        inbox = inbox.filter((y) => y.id !== x.id);
+        fillPanel(panel, repo);
+      } }))) : null,
+      actions);
+  }
+
   function row(repo) {
     const p = projectOf(repo);
     const me = status.user?.login;
-    const open = () => (p ? navigate(projectPath(p.id, 'git')) : repoDialog(repo, { onChanged: reload }));
+    const unread = unreadOf(repo);
     const changed = (next) => { repos = repos.map((r) => (r.full_name === repo.full_name ? next : r)); drawList(); };
     const deleted = () => { repos = repos.filter((r) => r.full_name !== repo.full_name); drawList(); };
-    const details = () => repoDialog(repo, { onChanged: reload });
+    const all = () => repoDialog(repo, { onChanged: reload });
+    // a click opens the row in place: a small overview, then the project's Git tab or GitHub
+    const panel = h('div.gh-x', { id: `gh-x-${repo.full_name.replace(/[^A-Za-z0-9_-]/g, '-')}` });
+    const toggle = () => {
+      const open = !expanded.has(repo.full_name);
+      if (open) expanded.add(repo.full_name);
+      else expanded.delete(repo.full_name);
+      entry.classList.toggle('is-open', open);
+      el.setAttribute('aria-expanded', String(open));
+      if (!open) return panel.remove();
+      entry.append(panel);
+      fillPanel(panel, repo);
+      if (details.get(repo.full_name)?.detail) return;
+      api.get(repoUrl(repo)).then((d) => details.set(repo.full_name, { detail: d }), (e) => details.set(repo.full_name, { error: e.message }))
+        .then(() => { if (panel.isConnected) fillPanel(panel, repo); });
+    };
     const el = h('div.gh-row', {
-      role: 'listitem',
       tabIndex: 0,
-      title: p ? `Open ${p.name}'s Git tab` : 'Details',
-      onclick: (e) => { if (!e.target.closest('button, a')) open(); },
-      onkeydown: (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); open(); } },
+      role: 'button',
+      'aria-expanded': 'false',
+      'aria-controls': panel.id,
+      title: 'Show the overview',
+      onclick: (e) => { if (!e.target.closest('button, a')) toggle(); },
+      onkeydown: (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); toggle(); } },
     },
     h('div.gh-main',
-      h('div.gh-name', repo.owner !== me ? h('span.faint', `${repo.owner}/`) : null, h('strong', repo.name), badges(repo)),
+      h('div.gh-name', repo.owner !== me ? h('span.faint', `${repo.owner}/`) : null, h('strong', repo.name), badges(repo),
+        h('span.gh-stars', { title: plural(repo.stars, 'star'), 'aria-label': plural(repo.stars, 'star') }, icon('star', 12), num(repo.stars)),
+        unread ? h('span.gh-unread', { title: plural(unread, 'unread notification') }, icon('bell', 11), String(unread)) : null),
       repo.description ? h('div.gh-desc', repo.description) : null),
     h('div.gh-meta',
       repo.language ? h('span.gh-lang', h('span.gh-lang-dot', { style: { background: LANG[repo.language] ?? 'var(--text-3)' } }), repo.language) : null,
-      repo.stars ? h('span', { title: 'Stars' }, `★ ${repo.stars}`) : null,
+      repo.forks ? h('span', { title: plural(repo.forks, 'fork') }, `${num(repo.forks)} ${repo.forks === 1 ? 'fork' : 'forks'}`) : null,
       repo.open_issues ? h('span', { title: 'Open issues and pull requests' }, `${repo.open_issues} open`) : null),
     h('div.gh-local', p
       ? [h('span.chip.accent', 'In FlintBench'), h('span.gh-local-git', `${p.git?.branch ?? ''}${p.git?.ahead ? ` ↑${p.git.ahead}` : ''}${p.git?.behind ? ` ↓${p.git.behind}` : ''} · ${gitLine(p.git)}`)]
@@ -417,19 +605,33 @@ export function mount(container) {
     h('div.gh-time.faint', ago(Date.parse(repo.pushed_at))),
     h('div.gh-actions',
       p ? null : actionButton('Clone', () => cloneRepo(repo), { cls: 'btn sm', iconName: 'download', title: 'Clone to this PC and add it to FlintBench' }),
-      actionButton('', (e) => repoMenu(repo, e.currentTarget, { onChanged: changed, onDeleted: deleted }), { cls: 'btn sm icon ghost', iconName: 'dots', title: `${repo.name} actions` }),
+      actionButton('', (e) => repoMenu(repo, e.currentTarget, { onChanged: changed, onDeleted: deleted, onDetails: all }), { cls: 'btn sm icon ghost', iconName: 'dots', title: `${repo.name} actions` }),
       h('span.prow-go', { 'aria-hidden': 'true' }, icon('chevron', 14))));
-    // right click: the ⋯ menu, plus Details for a repository whose click opens its project
-    contextMenu(el, () => repoMenuItems(repo, { onChanged: changed, onDeleted: deleted, onDetails: p ? details : null }), { label: `${repo.name} actions` });
-    return el;
+    // right click: the ⋯ menu, plus every detail (pull requests, issues, commits, branches)
+    contextMenu(el, () => repoMenuItems(repo, { onChanged: changed, onDeleted: deleted, onDetails: all }), { label: `${repo.name} actions` });
+    const entry = h('div.gh-entry', { role: 'listitem' }, el);
+    if (expanded.has(repo.full_name)) {
+      expanded.delete(repo.full_name); // toggle() puts it back, open
+      toggle();
+    }
+    return entry;
   }
 
   const unsub = subscribe('projects', () => drawList());
+  // the unread count moved (read here, on GitHub, or something new arrived): read the inbox again
+  let lastUnread = store.state.githubUnread;
+  const unsubInbox = subscribe('github', async () => {
+    if (!status?.authenticated || store.state.githubUnread === lastUnread) return;
+    lastUnread = store.state.githubUnread;
+    await loadInbox();
+    draw();
+  });
   draw();
   load();
   return {
     destroy() {
       unsub();
+      unsubInbox();
       watchSetup(false);
       window.removeEventListener('focus', onFocus);
     },
