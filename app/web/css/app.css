@@ -274,6 +274,16 @@ input[type="checkbox"]:disabled { opacity: 0.45; cursor: not-allowed; }
 .chip.err { background: var(--err-dim); color: var(--err); }
 .chip.agent { background: var(--agent-dim); color: var(--agent); }
 .chip.accent { background: var(--accent-dim); color: var(--accent); }
+/* an agent at work, as on Home: its mark, in its colour, with its live signal */
+.chip.agent-live { --c: var(--agent); gap: 5px; background: color-mix(in srgb, var(--c) 16%, transparent); color: var(--c); }
+.chip.agent-live.is-claude { --c: #d97757; }
+.chip.agent-live.is-codex { --c: #c9ccd3; }
+.chip.agent-live.is-gemini { --c: #6e8ef7; }
+.chip.agent-live.is-antigravity { --c: #4f8ff7; }
+.chip.agent-live .live-signal { width: 13px; height: 13px; font-size: 12px; line-height: 13px; }
+.chip.agent-live .live-signal.is-idle { color: color-mix(in srgb, var(--c) 55%, var(--text-3)); }
+.chip.agent-live.is-compact { gap: 3px; padding-right: 5px; padding-left: 5px; }
+.agent-live-name { font-weight: 600; }
 .tag { color: var(--text-3); font-size: var(--fs-xs); white-space: nowrap; }
 .tag + .tag::before { content: "·"; margin-right: 5px; color: var(--text-3); }
 
@@ -774,6 +784,53 @@ body:not(.in-project) .toasts { bottom: calc(46px + var(--clock-h, 132px) + 12px
   flex-wrap: wrap;
 }
 .p-head h1 { font-size: var(--fs-lg); }
+/* open projects as browser tabs: each drawn like the project title (name, state, branch, path);
+   the active one is outlined and opens onto the page below, the others say where they were left */
+.p-head:has(.p-wtabs) { flex-wrap: nowrap; align-items: flex-end; padding-top: 6px; padding-bottom: 0; padding-left: 0; }
+.p-head:has(.p-wtabs) .actions { flex: none; flex-wrap: nowrap; align-self: center; }
+.p-wtabs { display: flex; flex: 1 1 0; align-items: flex-end; min-width: 0; margin-bottom: -1px; overflow-x: auto; scrollbar-width: none; }
+.p-wtabs::-webkit-scrollbar { display: none; }
+.p-wtab { position: relative; display: flex; flex: 0 1 300px; align-items: center; gap: 4px; height: 58px; min-width: 76px; padding: 6px 8px 8px 14px; container-type: inline-size; border: 1px solid transparent; border-bottom: 0; border-radius: 10px 10px 0 0; color: var(--text-2); text-decoration: none; transition: background-color var(--t-quick) var(--ease), color var(--t-quick) var(--ease); }
+.p-wtab-body { display: grid; flex: 1; gap: 2px; min-width: 0; }
+/* a tab is a link, but never reads as one: no underline on hover */
+a.p-wtab, a.p-wtab:hover, a.p-wtab:focus-visible { text-decoration: none; }
+/* one visible line: what does not fit whole wraps onto a hidden second line (a chip is shown whole or not at all) */
+.p-wtab .row { flex-wrap: wrap; align-content: flex-start; height: 26px; min-width: 0; overflow: hidden; row-gap: 12px; }
+.p-wtab .chip { flex: none; white-space: nowrap; }
+/* the name comes first: alone on the line it is cut short, never pushed out */
+.p-wtab .row > h1, .p-wtab-name { flex: 0 1 auto; min-width: 0; line-height: 26px; }
+.p-wtab .row > .dot { flex: none; }
+.p-wtab.is-active { z-index: 1; flex: 0 1 340px; min-width: 150px; border-color: var(--line-strong); background-color: var(--bg); background-image: var(--pattern, var(--hive)); background-size: var(--pattern-size, 48px 27.71px); background-attachment: fixed; color: var(--text); }
+/* the outline meets the header's bottom line: a short foot on each side, like a browser tab */
+.p-wtab.is-active::before, .p-wtab.is-active::after { content: ''; position: absolute; bottom: 0; width: 8px; height: 8px; pointer-events: none; }
+.p-wtab.is-active::before { left: -9px; border-bottom-right-radius: 8px; box-shadow: 3px 3px 0 3px var(--bg), 1px 1px 0 0 var(--line-strong); }
+.p-wtab.is-active::after { right: -9px; border-bottom-left-radius: 8px; box-shadow: -3px 3px 0 3px var(--bg), -1px 1px 0 0 var(--line-strong); }
+.p-wtab:not(.is-active) { opacity: 0.5; filter: grayscale(1); transition: opacity var(--t-quick) var(--ease), filter var(--t-quick) var(--ease), background-color var(--t-quick) var(--ease); }
+.p-wtab:not(.is-active):hover { opacity: 0.95; filter: none; background: var(--hover); color: var(--text); }
+.p-wtab:not(.is-active):focus-visible { outline: none; opacity: 1; box-shadow: inset 0 0 0 1px var(--accent); }
+.p-wtab:first-child { border-left-color: transparent; border-top-left-radius: 0; }
+.p-wtab.is-active:first-child::before { display: none; }
+/* thin dividers between tabs that are not next to the active one */
+.p-wtab:not(.is-active) + .p-wtab:not(.is-active)::before { content: ''; position: absolute; top: 12px; bottom: 12px; left: 0; width: 1px; background: var(--line-strong); }
+.p-wtab:not(.is-active):hover::before, .p-wtab:not(.is-active):hover + .p-wtab::before { opacity: 0; }
+.p-wtab-name { min-width: 24px; font-size: var(--fs-lg); font-weight: 600; }
+.p-wtab .path { max-width: 100%; }
+.p-wtab-sub { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-3); font: var(--fs-xs) var(--font-mono); }
+.p-wtab-sec { display: inline-flex; flex: none; align-items: center; gap: 4px; color: var(--text-2); font-family: var(--font-ui); font-weight: 500; }
+.p-wtab-sub .path { flex: 1 1 auto; min-width: 0; }
+.p-wtab-x { display: grid; flex: none; place-items: center; align-self: center; width: 20px; height: 20px; margin-left: 4px; border: 0; border-radius: 5px; background: none; color: var(--text-3); cursor: pointer; opacity: 0; transition: opacity var(--t-quick) var(--ease); }
+.p-wtab:hover .p-wtab-x, .p-wtab.is-active .p-wtab-x, .p-wtab-x:focus-visible { opacity: 1; }
+.p-wtab-x:hover { background: var(--hover); color: var(--text); }
+/* narrower and narrower (the tab's own width): the branch goes first, then the state's words; the
+   section it was left on stays as long as it can, then the path, and the name is what remains */
+@container (max-width: 270px) { .p-wtab-branch { display: none; } }
+@container (max-width: 200px) { .p-wtab-state:not(.agent-live) { display: none; } .agent-live-name { display: none; } }
+@container (max-width: 140px) { .p-wtab-sec > span { display: none; } }
+@container (max-width: 120px) { .p-wtab .path { display: none; } .p-wtab-name { font-size: var(--fs); } }
+/* closing: the tab folds away, the others take its room */
+.p-wtab.is-closing { min-width: 0; max-width: 0 !important; padding-right: 0; padding-left: 0; border-color: transparent; opacity: 0; overflow: hidden; pointer-events: none; transition: max-width 200ms var(--ease), padding 200ms var(--ease), opacity 140ms var(--ease); }
+.p-wtab.is-closing::before, .p-wtab.is-closing::after { display: none; }
+@media (prefers-reduced-motion: reduce) { .p-wtab.is-closing { transition: none; } }
 .p-head .path { color: var(--text-3); font: var(--fs-xs) var(--font-mono); }
 .p-head .actions { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
 .p-head .actions .btn { height: 34px; padding: 0 14px; font-size: var(--fs); border-radius: var(--r-md); }

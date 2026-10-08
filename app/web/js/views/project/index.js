@@ -2,10 +2,11 @@ import { h, icon, replace, actionButton } from '../../lib/dom.js';
 import { store, subscribe } from '../../lib/store.js';
 import { api, projectUrl } from '../../lib/api.js';
 import { navigate, projectPath } from '../../lib/router.js';
-import { attempt, projectStatus, statusDot } from '../../lib/ui.js';
+import { attempt, projectStatus, statusDot, agentWorking } from '../../lib/ui.js';
+import { toolMarks } from '../../lib/agent-icons.js';
 import { createDock } from '../../terminal/dock.js';
 import { launchAgent } from './agent-panel.js';
-import { startProject, stopProject, canStart } from '../home.js';
+import { startProject, stopProject, canStart, liveSignal } from '../home.js';
 import { removeProject } from '../projects.js';
 import * as overview from './overview.js';
 import * as git from './git.js';
@@ -20,6 +21,7 @@ import { isTestProfile } from '../../lib/theme.js';
 import { has, currentProfile } from '../../lib/feature.js';
 import { defaultEditorName } from '../../lib/editor-menu.js';
 import { resumeWork } from '../../lib/resume.js';
+import { openProjects, touchProject, closeProject } from '../../lib/open-projects.js';
 
 // Two regions only: the section menu and its content, with the terminal dock below.
 const TABS = [
@@ -48,6 +50,31 @@ const resolveTab = (t) => {
   const start = currentProfile().startTab;
   return !t && TABS.some((x) => x.id === start && tabShown(x)) ? start : 'overview';
 };
+
+/**
+ * The agents at work on a project, as on Home: their marks, in their colour, with the live signal of
+ * the one answering (Claude Code's spark, Codex's dot…) or a grey dot while they wait. `compact`
+ * (a tab in the back) keeps the marks and the signal only.
+ */
+function agentChip(p, { compact = false } = {}) {
+  const agents = p.agents?.active ?? [];
+  const ids = [...new Set(agents.map((s) => s.agent))];
+  const names = [...new Set(agents.map((s) => s.agentName))].join(' + ');
+  const answering = agents.find((s) => agentWorking(s));
+  const signal = liveSignal(answering ? answering.agent : 'idle');
+  // the spark keeps its pace across redraws: its frames follow one clock, not the element's birth
+  const cycle = (el) => parseFloat(el.style.animationDuration) || 0;
+  for (const frame of signal.querySelectorAll('span')) {
+    const phase = (performance.now() / 1000) % (cycle(frame) || 1);
+    frame.style.animationDelay = `${(parseFloat(frame.style.animationDelay) - phase).toFixed(2)}s`;
+  }
+  const state = `${names} ${answering ? 'working' : 'waiting'}`;
+  return h(`span.chip.agent-live.is-${ids[0]}${compact ? '.is-compact' : '.p-wtab-state'}`, { title: state, 'aria-label': state },
+    toolMarks(ids, compact ? 12 : 13), compact ? null : h('span.agent-live-name', names), signal);
+}
+
+/** Where `id` was left (its open tab), for a one-click way back. */
+const tabPath = (x) => projectPath(x.id, x.tab);
 
 export function mount(container, route) {
   const projectId = route.id;
@@ -91,17 +118,76 @@ export function mount(container, route) {
     if (r.agentTerminal) dock.show(r.agentTerminal.id);
   }
 
+  /** Close an open project's tab; closing this one goes to its neighbour, or to Projects. */
+  // tabs folding away: a redraw meanwhile draws them folded, it does not bring them back
+  const closing = new Set();
+
+  function closeTab(id) {
+    closing.delete(id);
+    const open = openProjects();
+    const i = open.findIndex((x) => x.id === id);
+    closeProject(id);
+    if (id !== projectId) return;
+    const next = open[i + 1] ?? open[i - 1];
+    navigate(next ? tabPath(next) : '/projects');
+  }
+
+  /**
+   * One browser-like tab per open project, drawn like the project title: name, state, branch, path.
+   * The others say which section they were left on, and a click goes back there.
+   */
+  function projectTab(x) {
+    const p = store.project(x.id);
+    const active = x.id === projectId;
+    const st = projectStatus(p);
+    const g = p.git;
+    const def = TABS.find((t) => t.id === x.tab) ?? TABS[0];
+    const close = h('button.p-wtab-x', {
+      type: 'button',
+      title: `Close ${p.name}`,
+      'aria-label': `Close ${p.name}`,
+      onclick: (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // the tab folds away first (from its current width to none), then it is gone
+        const el = e.currentTarget.closest('.p-wtab');
+        if (closing.has(x.id)) return;
+        if (matchMedia('(prefers-reduced-motion: reduce)').matches) return closeTab(x.id);
+        closing.add(x.id);
+        el.style.maxWidth = `${el.offsetWidth}px`;
+        void el.offsetWidth; // start the fold from that width
+        el.classList.add('is-closing');
+        setTimeout(() => closeTab(x.id), 200);
+      },
+    }, icon('x', 11));
+    const body = h('div.p-wtab-body',
+      h('div.row',
+        active ? h('h1.ellipsis', p.name) : h('span.p-wtab-name.ellipsis', p.name),
+        // a tab in the back keeps its name readable: its state is the dot alone (the label on hover)
+        p.agents?.active?.length ? agentChip(p, { compact: !active })
+          : active ? h(`span.chip.p-wtab-state${st.cls ? `.${st.cls}` : ''}`, statusDot(st.dot, st.label), st.label) : statusDot(st.dot, st.label),
+        g?.isRepo ? h('span.chip.mono.p-wtab-branch', { title: 'Current branch' }, icon('branch', 11), g.detached ? 'detached' : g.branch) : null,
+      ),
+      // under the name: the path; a tab in the back first says which section it was left on
+      h('div.p-wtab-sub',
+        active ? null : h('span.p-wtab-sec', { title: `Left on ${def.label}` }, icon(def.icon, 11), h('span', def.label)),
+        h('span.path.ellipsis', { title: p.path }, p.path)));
+    const folding = closing.has(x.id) ? '.is-closing' : '';
+    if (active) return h(`div.p-wtab.is-active${folding}`, { role: 'tab', 'aria-selected': 'true' }, body, openProjects().length > 1 ? close : null);
+    return h(`a.p-wtab${folding}`, {
+      href: tabPath(x),
+      role: 'tab',
+      'aria-selected': 'false',
+      title: `Switch to ${p.name} · ${def.label} (Alt+PgUp / Alt+PgDn)`,
+    }, body, close);
+  }
+
   function renderHead() {
     const p = store.project(projectId);
     if (!p) return;
-    const st = projectStatus(p);
-    const g = p.git;
+    const open = openProjects();
     replace(head,
-      h('div', { style: { minWidth: 0 } },
-        h('div.row', h('h1.ellipsis', p.name),
-          h(`span.chip${st.cls ? `.${st.cls}` : ''}`, statusDot(st.dot, st.label), st.label),
-          g?.isRepo ? h('span.chip.mono', { title: 'Current branch' }, icon('branch', 11), g.detached ? 'detached' : g.branch) : null),
-        h('div.path.ellipsis', { title: p.path }, p.path)),
+      h('div.p-wtabs', { role: 'tablist', 'aria-label': 'Open projects' }, (open.some((x) => x.id === projectId) ? open : [{ id: projectId, tab }]).map(projectTab)),
       h('div.actions',
         actionButton('Resume', resumeHere, { cls: 'btn sm primary', iconName: 'resume', title: 'Reopen the last agent conversation, start the services that were running and restore your terminals' }),
         p.running
@@ -146,6 +232,13 @@ export function mount(container, route) {
     if ((e.ctrlKey || e.metaKey) && e.key === '`') {
       e.preventDefault();
       dock.toggle();
+    } else if (e.altKey && !e.ctrlKey && (e.key === 'PageUp' || e.key === 'PageDown')) {
+      // the next / previous open project, on the section it was left on
+      const open = openProjects();
+      const i = open.findIndex((x) => x.id === projectId);
+      if (open.length < 2 || i === -1) return;
+      e.preventDefault();
+      navigate(tabPath(open[(i + (e.key === 'PageDown' ? 1 : -1) + open.length) % open.length]));
     }
   };
   document.addEventListener('keydown', onKey);
@@ -160,7 +253,10 @@ export function mount(container, route) {
     current?.update?.();
   });
   const unsubTerms = subscribe('terminals', renderNav);
+  // the tabs follow the other open projects too (their state, their branch, a tab closed)
+  const unsubStrip = subscribe(['openProjects', 'projects'], renderHead);
 
+  touchProject(projectId, tab);
   renderHead();
   renderNav();
   renderTab();
@@ -178,6 +274,7 @@ export function mount(container, route) {
       if (next.tab === 'workspace') openWorkspace();
       if (nextTab !== tab) {
         tab = nextTab;
+        touchProject(projectId, tab);
         renderHead();
         renderNav();
         renderTab();
@@ -202,6 +299,7 @@ export function mount(container, route) {
       dock.destroy();
       unsub();
       unsubTerms();
+      unsubStrip();
       document.removeEventListener('keydown', onKey);
     },
   };

@@ -164,7 +164,7 @@ const FRAMES = {
 };
 const SIGNAL_OF = { claude: 'claude', codex: 'codex', antigravity: 'braille', gemini: 'braille', edit: 'caret' };
 
-function liveSignal(kind) {
+export function liveSignal(kind) {
   if (kind === 'idle') return h('span.live-signal.is-idle', { 'aria-hidden': 'true' }, '·');
   const look = SIGNAL_OF[kind] ?? 'claude';
   const frames = FRAMES[look];

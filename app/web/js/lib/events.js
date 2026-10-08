@@ -25,6 +25,8 @@ export function describeEvent(e) {
     case 'work.updated': return `work "${d.title}" → ${String(d.status).replace('_', ' ')}`;
     case 'editor.opened': return `${d.name ?? 'editor'} open on the project`;
     case 'editor.closed': return `${d.name ?? 'editor'} closed`;
+    case 'github.repo_changed': return d.stars?.to > d.stars?.from ? `${d.name} starred on GitHub (${plural(d.stars.to, 'star')})` : `${d.name} forked on GitHub (${plural(d.forks?.to ?? 0, 'fork')})`;
+    case 'github.notification': return d.count > 1 ? `${d.count} new GitHub notifications` : `GitHub: ${d.title ?? 'new notification'}`;
     default: return e.type;
   }
 }

@@ -145,6 +145,8 @@ function handle(msg) {
       transcriptHandlers.get(msg.id)?.(msg);
       break;
     case 'event':
+      // the unread GitHub count is state for the sidebar badge, not something that happened
+      if (msg.e?.type === 'github.inbox') break;
       store.state.lastEvent = msg.e;
       notify('event');
       break;
